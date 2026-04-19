@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ACS Gym Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel2: #1c2230;
+    --border: #252c3a;
+    --text: #e6e8ee;
+    --muted: #8a93a6;
+    --accent: #7c9cff;
+    --good: #4ade80;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+  }
+  * { box-sizing: border-box }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", sans-serif;
+  }
+  header {
+    padding: 22px 28px 10px;
+    display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px;
+  }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600 }
+  header .sub { color: var(--muted); font-size: 13px }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 16px;
+    padding: 12px 24px 40px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    min-height: 0;
+  }
+  .card h2 {
+    margin: 0 0 10px 0; font-size: 13px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .span-3 { grid-column: span 3 }
+  .span-4 { grid-column: span 4 }
+  .span-6 { grid-column: span 6 }
+  .span-8 { grid-column: span 8 }
+  .span-12 { grid-column: span 12 }
+  @media (max-width: 960px) {
+    .span-3, .span-4, .span-6, .span-8 { grid-column: span 12 }
+  }
+  .stat { font-size: 34px; font-weight: 700; line-height: 1 }
+  .stat .unit { font-size: 13px; color: var(--muted); font-weight: 500; margin-left: 6px }
+  .stat-sub { color: var(--muted); font-size: 12px; margin-top: 6px }
+  .chart { width: 100%; height: 300px }
+  .chart-tall { height: 360px }
+  .chart-short { height: 200px }
+  select, input[type="text"] {
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 8px; font-size: 13px; outline: none;
+  }
+  select:focus, input:focus { border-color: var(--accent) }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+  .row label { color: var(--muted); font-size: 12px }
+  .loading, .error {
+    padding: 32px; text-align: center; color: var(--muted);
+  }
+  .error { color: var(--bad) }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: var(--panel2); color: var(--muted);
+    font-size: 11px; border: 1px solid var(--border);
+  }
+  .legend-swatch {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    margin-right: 4px; vertical-align: middle;
+  }
+  .heatmap-legend { color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 4px }
+  .heatmap-cell-sample { width: 10px; height: 10px; border-radius: 2px; display: inline-block }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ACS Gym Dashboard</h1>
+    <div class="sub" id="data-status">Loading data…</div>
+  </div>
+  <div class="pill" id="data-range"></div>
+</header>
+
+<div id="content" class="loading">Fetching your gym log…</div>
+
+<script>
+// ============================================================
+// Config
+// ============================================================
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZcwe6JZcbhyEe_QjWziIp6hfssOgZZAaWeLGXAQ5y9Q43PsyVD5Cdv6T85SAi1IDlqdRtJiWFb2ok/pub?gid=0&single=true&output=csv";
+
+// Known muscle-group section headers (order matters — they appear in this order in the sheet)
+const MUSCLE_GROUPS = ["CHEST", "SHOULDER", "TRICEPS", "BACK", "BICEPS", "LEGS"];
+const GROUP_COLORS = {
+  CHEST:    "#ef4444",
+  SHOULDER: "#f59e0b",
+  TRICEPS:  "#eab308",
+  BACK:     "#22c55e",
+  BICEPS:   "#06b6d4",
+  LEGS:     "#8b5cf6",
+};
+
+// ============================================================
+// CSV parsing — transforms wide-format sheet into long-format records
+// ============================================================
+
+// Parse a date string. Sheet uses YY/MM/DD format predominantly, with
+// one known typo in MM/DD/YY form. Returns Date or null.
+function parseSheetDate(s) {
+  if (!s) return null;
+  const str = String(s).trim();
+  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) return null;
+  let [_, a, b, c] = m;
+  a = parseInt(a, 10); b = parseInt(b, 10); c = parseInt(c, 10);
+  // Canonical interpretation: YY/MM/DD
+  // If a looks like a year (< 99) and b is a valid month
+  let year, month, day;
+  if (a <= 99 && b >= 1 && b <= 12 && c >= 1 && c <= 31) {
+    year = 2000 + a; month = b; day = c;
+  } else if (c <= 99 && a >= 1 && a <= 12 && b >= 1 && b <= 31) {
+    // Fallback: MM/DD/YY (handles the 12/20/23 typo)
+    year = 2000 + c; month = a; day = b;
+  } else {
+    return null;
+  }
+  const d = new Date(Date.UTC(year, month - 1, day));
+  if (isNaN(d.getTime())) return null;
+  return d;
+}
+
+// Extract the max numeric weight from a cell value. Returns null for
+// non-weight data (reps-only notation, text notes, etc.).
+function parseWeight(s) {
+  if (s == null) return null;
+  const str = String(s).trim();
+  if (!str) return null;
+  // Reps-only entries like ".10,10" or ".12,12,9" are pre-weight-tracking
+  if (/^\./.test(str)) return null;
+  // Strip asterisks (PR markers) and parens-content (machine variant notes)
+  // but keep values inside parens eligible — some cells like "60(90)" seem
+  // to encode machine display vs. real load. Take the max for progression.
+  const nums = (str.match(/\d+(?:\.\d+)?/g) || []).map(Number).filter(n => !isNaN(n));
+  if (nums.length === 0) return null;
+  // Heuristic: ignore a leading 0 (rare), prefer the largest value seen.
+  // This captures PRs and both sides of drop-sets / parenthetical variants.
+  return Math.max(...nums);
+}
+
+// Build the long-format records from parsed CSV matrix.
+function buildLongFormat(rows) {
+  // Row 0: session type labels (Push/Pull/Legs); Row 1: dates
+  const typeRow  = rows[0] || [];
+  const dateRow  = rows[1] || [];
+
+  // Scan column A to find section headers and exercise rows.
+  const exerciseMeta = []; // {rowIdx, name, group}
+  let currentGroup = null;
+  for (let r = 0; r < rows.length; r++) {
+    const cell = (rows[r][0] || "").trim();
+    if (!cell) continue;
+    const up = cell.toUpperCase();
+    if (MUSCLE_GROUPS.includes(up)) {
+      currentGroup = up;
+      continue;
+    }
+    // Stop at trailing metadata rows (Where, Details, etc.)
+    if (/^(where|details|other training)/i.test(cell)) break;
+    if (currentGroup && cell !== "ABS") {
+      exerciseMeta.push({ rowIdx: r, name: cell, group: currentGroup });
+    }
+  }
+
+  // Iterate columns. Skip col 0 (row labels) and the last 2 (Last rep number / MAX).
+  const sessions = []; // { date, sessionType, exercises: [{group, name, weight}], colIdx }
+  const records = []; // flat long-format: { date, group, exercise, weight }
+
+  for (let c = 1; c < dateRow.length; c++) {
+    const dateStr = (dateRow[c] || "").trim();
+    const date = parseSheetDate(dateStr);
+    if (!date) continue; // skip anomaly columns (January 2024, MAX, etc.)
+
+    const sessionType = (typeRow[c] || "").trim();
+    const exs = [];
+    for (const m of exerciseMeta) {
+      const raw = rows[m.rowIdx] ? rows[m.rowIdx][c] : "";
+      const w = parseWeight(raw);
+      if (w != null) {
+        exs.push({ group: m.group, name: m.name, weight: w });
+        records.push({ date, group: m.group, exercise: m.name, weight: w });
+      }
+    }
+    if (exs.length > 0) {
+      sessions.push({ date, sessionType, exercises: exs, colIdx: c });
+    }
+  }
+
+  return { sessions, records, exerciseMeta };
+}
+
+// ============================================================
+// Metric helpers
+// ============================================================
+
+function toISODate(d) {
+  return d.toISOString().slice(0, 10);
+}
+function startOfISOWeek(d) {
+  // Monday as week start
+  const day = d.getUTCDay() || 7; // Sun=7
+  const out = new Date(d);
+  out.setUTCDate(d.getUTCDate() - (day - 1));
+  out.setUTCHours(0, 0, 0, 0);
+  return out;
+}
+function daysBetween(a, b) {
+  return Math.round((b - a) / (24 * 3600 * 1000));
+}
+
+// Compute weekly frequency: Map<ISOWeekStart, count>
+function weeklyFrequency(sessions) {
+  // Collapse same-day sessions to 1 (frequency = distinct gym days)
+  const days = new Set(sessions.map(s => toISODate(s.date)));
+  const buckets = new Map();
+  for (const d of days) {
+    const dt = new Date(d + "T00:00:00Z");
+    const wk = toISODate(startOfISOWeek(dt));
+    buckets.set(wk, (buckets.get(wk) || 0) + 1);
+  }
+  return buckets;
+}
+
+function currentStreak(sessions) {
+  // Consecutive-week streak, counted in weeks with >=1 gym session,
+  // ending at the current week.
+  const buckets = weeklyFrequency(sessions);
+  let wk = startOfISOWeek(new Date());
+  let streak = 0;
+  while (buckets.has(toISODate(wk))) {
+    streak++;
+    wk = new Date(wk.getTime() - 7 * 24 * 3600 * 1000);
+  }
+  return streak;
+}
+
+function longestStreak(sessions) {
+  const buckets = weeklyFrequency(sessions);
+  if (buckets.size === 0) return 0;
+  const weeks = [...buckets.keys()].map(k => new Date(k + "T00:00:00Z")).sort((a, b) => a - b);
+  let best = 1, cur = 1;
+  for (let i = 1; i < weeks.length; i++) {
+    const diff = daysBetween(weeks[i - 1], weeks[i]);
+    if (diff === 7) { cur++; best = Math.max(best, cur); }
+    else cur = 1;
+  }
+  return best;
+}
+
+// Max weight progression per exercise: Map<exercise, [{date, weight (cum-max)}]>
+function progressionByExercise(records) {
+  const byEx = new Map();
+  for (const r of records) {
+    if (!byEx.has(r.exercise)) byEx.set(r.exercise, []);
+    byEx.get(r.exercise).push({ date: r.date, weight: r.weight, group: r.group });
+  }
+  for (const arr of byEx.values()) arr.sort((a, b) => a.date - b.date);
+  return byEx;
+}
+
+// ============================================================
+// Rendering
+// ============================================================
+
+const layoutDefaults = {
+  paper_bgcolor: "rgba(0,0,0,0)",
+  plot_bgcolor: "rgba(0,0,0,0)",
+  font: { family: "inherit", color: "#e6e8ee", size: 12 },
+  margin: { l: 48, r: 20, t: 10, b: 40 },
+  xaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
+  yaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
+  hoverlabel: { bgcolor: "#1c2230", bordercolor: "#252c3a" },
+};
+const plotlyConfig = { responsive: true, displayModeBar: false };
+
+function renderDashboard(data) {
+  const { sessions, records } = data;
+  const content = document.getElementById("content");
+  content.className = "";
+  content.classList.add("grid");
+  content.innerHTML = `
+    <div class="card span-3">
+      <h2>Total sessions</h2>
+      <div class="stat" id="stat-total">–</div>
+      <div class="stat-sub" id="stat-total-sub"></div>
+    </div>
+    <div class="card span-3">
+      <h2>This week</h2>
+      <div class="stat" id="stat-week">–</div>
+      <div class="stat-sub" id="stat-week-sub"></div>
+    </div>
+    <div class="card span-3">
+      <h2>Week streak</h2>
+      <div class="stat" id="stat-streak">–</div>
+      <div class="stat-sub" id="stat-streak-sub"></div>
+    </div>
+    <div class="card span-3">
+      <h2>Last session</h2>
+      <div class="stat" id="stat-last">–</div>
+      <div class="stat-sub" id="stat-last-sub"></div>
+    </div>
+
+    <div class="card span-8">
+      <h2>Sessions per week</h2>
+      <div id="chart-weekly" class="chart chart-tall"></div>
+    </div>
+    <div class="card span-4">
+      <h2>Sessions by muscle group (last 90 days)</h2>
+      <div id="chart-groups" class="chart chart-tall"></div>
+    </div>
+
+    <div class="card span-12">
+      <h2>Gym calendar</h2>
+      <div id="chart-calendar" class="chart"></div>
+      <div class="heatmap-legend">
+        Less
+        <span class="heatmap-cell-sample" style="background:#1a2030"></span>
+        <span class="heatmap-cell-sample" style="background:#2d4a3e"></span>
+        <span class="heatmap-cell-sample" style="background:#3fa66b"></span>
+        <span class="heatmap-cell-sample" style="background:#4ade80"></span>
+        More
+      </div>
+    </div>
+
+    <div class="card span-12">
+      <h2>Max weight progression</h2>
+      <div class="row" style="margin-bottom: 10px">
+        <label for="filter-group">Muscle group</label>
+        <select id="filter-group">
+          <option value="ALL">All</option>
+          ${MUSCLE_GROUPS.map(g => `<option value="${g}">${g[0] + g.slice(1).toLowerCase()}</option>`).join("")}
+        </select>
+        <label for="filter-min">Min data points</label>
+        <select id="filter-min">
+          <option value="5">5</option>
+          <option value="10" selected>10</option>
+          <option value="20">20</option>
+          <option value="1">all</option>
+        </select>
+      </div>
+      <div id="chart-progression" class="chart chart-tall"></div>
+    </div>
+  `;
+
+  // --- Stat tiles ---
+  const total = sessions.length;
+  const firstDate = sessions[0]?.date;
+  const lastDate = sessions[sessions.length - 1]?.date;
+
+  document.getElementById("stat-total").innerHTML = `${total}<span class="unit">sessions</span>`;
+  document.getElementById("stat-total-sub").textContent = firstDate
+    ? `Since ${firstDate.toISOString().slice(0, 10)}`
+    : "";
+
+  const weekly = weeklyFrequency(sessions);
+  const thisWeekKey = toISODate(startOfISOWeek(new Date()));
+  const thisWeek = weekly.get(thisWeekKey) || 0;
+  document.getElementById("stat-week").innerHTML = `${thisWeek}<span class="unit">days</span>`;
+  // Compare with avg of last 12 weeks (excluding current)
+  const past = [...weekly.entries()]
+    .filter(([k]) => k !== thisWeekKey)
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .slice(0, 12)
+    .map(([, v]) => v);
+  const avg12 = past.length ? (past.reduce((s, x) => s + x, 0) / past.length) : 0;
+  document.getElementById("stat-week-sub").textContent =
+    `Avg last 12 wks: ${avg12.toFixed(1)}/wk`;
+
+  const streak = currentStreak(sessions);
+  const longest = longestStreak(sessions);
+  document.getElementById("stat-streak").innerHTML = `${streak}<span class="unit">weeks</span>`;
+  document.getElementById("stat-streak-sub").textContent = `Longest: ${longest} weeks`;
+
+  if (lastDate) {
+    const days = daysBetween(lastDate, new Date());
+    document.getElementById("stat-last").innerHTML = `${days}<span class="unit">days ago</span>`;
+    document.getElementById("stat-last-sub").textContent = lastDate.toISOString().slice(0, 10);
+  }
+
+  document.getElementById("data-range").textContent =
+    firstDate && lastDate
+      ? `${firstDate.toISOString().slice(0, 10)} → ${lastDate.toISOString().slice(0, 10)}`
+      : "";
+  document.getElementById("data-status").textContent =
+    `${total} sessions · ${records.length} exercise entries · auto-refreshed on page load`;
+
+  // --- Weekly frequency chart ---
+  renderWeekly(sessions);
+  // --- Muscle group distribution (last 90 days) ---
+  renderGroups(sessions);
+  // --- Calendar heatmap ---
+  renderCalendar(sessions);
+  // --- Progression ---
+  const progression = progressionByExercise(records);
+  const groupSel = document.getElementById("filter-group");
+  const minSel = document.getElementById("filter-min");
+  const redraw = () => renderProgression(progression, groupSel.value, parseInt(minSel.value, 10));
+  groupSel.addEventListener("change", redraw);
+  minSel.addEventListener("change", redraw);
+  redraw();
+}
+
+function renderWeekly(sessions) {
+  const buckets = weeklyFrequency(sessions);
+  if (buckets.size === 0) return;
+  const keys = [...buckets.keys()].sort();
+  // Fill in any missing weeks so the x-axis has no gaps
+  const first = new Date(keys[0] + "T00:00:00Z");
+  const last = startOfISOWeek(new Date());
+  const xs = []; const ys = [];
+  for (let d = new Date(first); d <= last; d = new Date(d.getTime() + 7 * 24 * 3600 * 1000)) {
+    const k = toISODate(d);
+    xs.push(k);
+    ys.push(buckets.get(k) || 0);
+  }
+  const colors = ys.map(v => v === 0 ? "#2d3648" : v >= 3 ? "#4ade80" : v === 2 ? "#7c9cff" : "#f59e0b");
+  Plotly.newPlot("chart-weekly", [{
+    type: "bar",
+    x: xs, y: ys,
+    marker: { color: colors },
+    hovertemplate: "Week of %{x}<br>%{y} sessions<extra></extra>",
+  }], {
+    ...layoutDefaults,
+    margin: { l: 40, r: 16, t: 10, b: 40 },
+    yaxis: { ...layoutDefaults.yaxis, title: "", dtick: 1 },
+  }, plotlyConfig);
+}
+
+function renderGroups(sessions) {
+  const cutoff = new Date(); cutoff.setUTCDate(cutoff.getUTCDate() - 90);
+  const counts = {};
+  for (const g of MUSCLE_GROUPS) counts[g] = 0;
+  for (const s of sessions) {
+    if (s.date < cutoff) continue;
+    const groupsHit = new Set(s.exercises.map(e => e.group));
+    for (const g of groupsHit) counts[g] = (counts[g] || 0) + 1;
+  }
+  const keys = MUSCLE_GROUPS;
+  Plotly.newPlot("chart-groups", [{
+    type: "bar",
+    orientation: "h",
+    y: keys.map(g => g[0] + g.slice(1).toLowerCase()),
+    x: keys.map(g => counts[g]),
+    marker: { color: keys.map(g => GROUP_COLORS[g]) },
+    hovertemplate: "%{y}: %{x} sessions<extra></extra>",
+  }], {
+    ...layoutDefaults,
+    margin: { l: 80, r: 16, t: 10, b: 40 },
+    xaxis: { ...layoutDefaults.xaxis, dtick: 1 },
+    yaxis: { ...layoutDefaults.yaxis, automargin: true },
+  }, plotlyConfig);
+}
+
+function renderCalendar(sessions) {
+  // Build a continuous 52-week grid ending today. Rows = day of week, cols = week index.
+  const dayCounts = new Map(); // date -> session count
+  for (const s of sessions) {
+    const k = toISODate(s.date);
+    dayCounts.set(k, (dayCounts.get(k) || 0) + 1);
+  }
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const end = startOfISOWeek(today);
+  end.setUTCDate(end.getUTCDate() + 6); // sunday of this week
+  const start = new Date(end);
+  start.setUTCDate(end.getUTCDate() - (52 * 7 - 1));
+
+  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const z = Array.from({ length: 7 }, () => []);
+  const text = Array.from({ length: 7 }, () => []);
+  const xLabels = [];
+  let weekCol = 0;
+  for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 24 * 3600 * 1000)) {
+    const dow = (d.getUTCDay() + 6) % 7; // Mon = 0
+    const key = toISODate(d);
+    const v = dayCounts.get(key) || 0;
+    z[dow][weekCol] = v;
+    text[dow][weekCol] = `${key}${v ? `: ${v} session${v > 1 ? "s" : ""}` : ""}`;
+    if (dow === 6) {
+      xLabels.push(toISODate(new Date(d.getTime() - 6 * 24 * 3600 * 1000)));
+      weekCol++;
+    }
+  }
+  Plotly.newPlot("chart-calendar", [{
+    type: "heatmap",
+    z, text, hoverinfo: "text",
+    x: xLabels,
+    y: days,
+    colorscale: [
+      [0, "#1a2030"],
+      [0.25, "#2d4a3e"],
+      [0.5, "#3fa66b"],
+      [1, "#4ade80"],
+    ],
+    showscale: false,
+    xgap: 2, ygap: 2,
+    zmin: 0, zmax: 2,
+  }], {
+    ...layoutDefaults,
+    height: 200,
+    margin: { l: 40, r: 16, t: 10, b: 40 },
+    xaxis: { ...layoutDefaults.xaxis, showgrid: false, type: "category",
+      tickvals: xLabels.filter((_, i) => i % 4 === 0),
+    },
+    yaxis: { ...layoutDefaults.yaxis, showgrid: false, autorange: "reversed" },
+  }, plotlyConfig);
+}
+
+function renderProgression(progMap, groupFilter, minPoints) {
+  const traces = [];
+  const entries = [...progMap.entries()]
+    .filter(([name, points]) => points.length >= minPoints)
+    .filter(([name, points]) => groupFilter === "ALL" || points[0].group === groupFilter);
+
+  // Sort for a stable legend order
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+
+  for (const [name, points] of entries) {
+    // Compute cumulative max so the trend is monotone (shows PR progression)
+    let cmax = -Infinity;
+    const cumMax = points.map(p => { cmax = Math.max(cmax, p.weight); return cmax; });
+    const group = points[0].group;
+    traces.push({
+      type: "scatter",
+      mode: "lines+markers",
+      name: name,
+      x: points.map(p => toISODate(p.date)),
+      y: cumMax,
+      line: { color: GROUP_COLORS[group] || "#7c9cff", width: 2 },
+      marker: { size: 4 },
+      hovertemplate: `<b>${name}</b><br>%{x}<br>Max: %{y} kg<extra></extra>`,
+    });
+  }
+
+  Plotly.newPlot("chart-progression", traces, {
+    ...layoutDefaults,
+    showlegend: true,
+    legend: { orientation: "v", x: 1.02, y: 1, font: { size: 11 } },
+    margin: { l: 50, r: 180, t: 10, b: 40 },
+    yaxis: { ...layoutDefaults.yaxis, title: "kg" },
+  }, plotlyConfig);
+}
+
+// ============================================================
+// Entry point
+// ============================================================
+async function main() {
+  try {
+    const resp = await fetch(CSV_URL, { cache: "no-store" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const text = await resp.text();
+    const parsed = Papa.parse(text, { skipEmptyLines: false });
+    const rows = parsed.data;
+    const data = buildLongFormat(rows);
+    if (data.sessions.length === 0) throw new Error("No sessions found in sheet");
+    renderDashboard(data);
+  } catch (err) {
+    const content = document.getElementById("content");
+    content.className = "error";
+    content.textContent = `Could not load sheet: ${err.message}. Check that the sheet is still published to web.`;
+    console.error(err);
+  }
+}
+
+main();
+</script>
+</body>
+</html>
