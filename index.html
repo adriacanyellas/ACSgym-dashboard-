@@ -345,7 +345,7 @@ function renderDashboard(data) {
     </div>
 
     <div class="card span-12">
-      <h2>Max weight progression</h2>
+      <h2>Weight per session</h2>
       <div class="row" style="margin-bottom: 10px">
         <label for="filter-group">Muscle group</label>
         <select id="filter-group">
@@ -538,19 +538,19 @@ function renderProgression(progMap, groupFilter, minPoints) {
   entries.sort((a, b) => a[0].localeCompare(b[0]));
 
   for (const [name, points] of entries) {
-    // Compute cumulative max so the trend is monotone (shows PR progression)
-    let cmax = -Infinity;
-    const cumMax = points.map(p => { cmax = Math.max(cmax, p.weight); return cmax; });
+    // Plot the actual weight used on each session (not a cumulative max).
+    // This reflects real day-to-day variation including deloads and lighter days.
     const group = points[0].group;
     traces.push({
       type: "scatter",
       mode: "lines+markers",
       name: name,
       x: points.map(p => toISODate(p.date)),
-      y: cumMax,
-      line: { color: GROUP_COLORS[group] || "#7c9cff", width: 2 },
-      marker: { size: 4 },
-      hovertemplate: `<b>${name}</b><br>%{x}<br>Max: %{y} kg<extra></extra>`,
+      y: points.map(p => p.weight),
+      line: { color: GROUP_COLORS[group] || "#7c9cff", width: 2, shape: "linear" },
+      marker: { size: 5 },
+      connectgaps: true,
+      hovertemplate: `<b>${name}</b><br>%{x}<br>%{y} kg<extra></extra>`,
     });
   }
 
