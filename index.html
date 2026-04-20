@@ -83,6 +83,27 @@
   }
   .heatmap-legend { color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 4px }
   .heatmap-cell-sample { width: 10px; height: 10px; border-radius: 2px; display: inline-block }
+  .group-title { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px 0; }
+  .group-title h2 { margin: 0; font-size: 15px; text-transform: uppercase; letter-spacing: .05em; }
+  .group-title .count { color: var(--muted); font-size: 12px; }
+  .exercise-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 12px;
+  }
+  .exercise-card {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 10px 4px 10px;
+  }
+  .exercise-card-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 4px;
+  }
+  .exercise-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .exercise-card-sub { color: var(--muted); font-size: 11px; font-weight: 400; }
+  .exercise-mini-chart { width: 100%; height: 170px; }
 </style>
 </head>
 <body>
@@ -351,7 +372,11 @@ const layoutDefaults = {
   margin: { l: 48, r: 20, t: 10, b: 40 },
   xaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
   yaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
-  hoverlabel: { bgcolor: "#1c2230", bordercolor: "#252c3a" },
+  hoverlabel: {
+    bgcolor: "#1c2230",
+    bordercolor: "#252c3a",
+    font: { color: "#ffffff", size: 12 },
+  },
 };
 const plotlyConfig = { responsive: true, displayModeBar: false };
 
@@ -428,6 +453,8 @@ function renderDashboard(data) {
       <div id="volume-hint" class="stat-sub" style="margin-bottom: 8px"></div>
       <div id="chart-volume" class="chart"></div>
     </div>
+
+    <div id="per-exercise-sections" class="span-12" style="display: contents"></div>
   `;
 
   // --- Stat tiles ---
@@ -489,6 +516,9 @@ function renderDashboard(data) {
 
   // --- Volume ---
   renderVolume(sessions, records);
+
+  // --- Per-exercise breakdown (one section per muscle group) ---
+  renderPerExerciseBreakdown(records);
 }
 
 function renderWeekly(sessions) {
@@ -512,7 +542,15 @@ function renderWeekly(sessions) {
     hovertemplate: "Week of %{x}<br>%{y} sessions<extra></extra>",
   }], {
     ...layoutDefaults,
-    margin: { l: 40, r: 16, t: 10, b: 40 },
+    margin: { l: 40, r: 16, t: 10, b: 70 },
+    xaxis: {
+      ...layoutDefaults.xaxis,
+      type: "date",
+      dtick: "M1",           // one tick per month
+      tickformat: "%b '%y",  // e.g. "Jan '24"
+      tickangle: -45,
+      tickfont: { size: 10 },
+    },
     yaxis: { ...layoutDefaults.yaxis, title: "", dtick: 1 },
   }, plotlyConfig);
 }
@@ -655,7 +693,15 @@ function renderProgression(progMap, groupFilter, minPoints) {
     ...layoutDefaults,
     showlegend: true,
     legend: { orientation: "v", x: 1.02, y: 1, font: { size: 11 } },
-    margin: { l: 50, r: 180, t: 10, b: 40 },
+    margin: { l: 50, r: 180, t: 10, b: 70 },
+    xaxis: {
+      ...layoutDefaults.xaxis,
+      type: "date",
+      dtick: "M1",
+      tickformat: "%b '%y",
+      tickangle: -45,
+      tickfont: { size: 10 },
+    },
     yaxis: { ...layoutDefaults.yaxis, title: "lbs" },
   }, plotlyConfig);
 }
@@ -710,6 +756,131 @@ function renderVolume(sessions, records) {
     margin: { l: 60, r: 16, t: 10, b: 60 },
     yaxis: { ...layoutDefaults.yaxis, title: "lbs (weight × reps)" },
   }, plotlyConfig);
+}
+
+// Per-exercise breakdown: one section per muscle group, one mini-chart per exercise.
+// Each mini-chart overlays per-session weight (line, primary axis) and per-session
+// volume (bars, secondary axis). Exercises are ordered by session count (desc) so
+// the ones trained most often appear first.
+function renderPerExerciseBreakdown(records) {
+  const container = document.getElementById("per-exercise-sections");
+  if (!container) return;
+  container.innerHTML = ""; // reset
+
+  // records → group → exercise → points[]
+  const byGroup = new Map();
+  for (const g of MUSCLE_GROUPS) byGroup.set(g, new Map());
+  for (const r of records) {
+    const gMap = byGroup.get(r.group);
+    if (!gMap) continue;
+    if (!gMap.has(r.exercise)) gMap.set(r.exercise, []);
+    gMap.get(r.exercise).push(r);
+  }
+
+  for (const group of MUSCLE_GROUPS) {
+    const gMap = byGroup.get(group);
+    if (!gMap || gMap.size === 0) continue;
+
+    // Sort exercises by session count, descending
+    const exercises = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
+    const color = GROUP_COLORS[group];
+    const pretty = group[0] + group.slice(1).toLowerCase();
+
+    // Card per muscle group, containing a responsive grid of mini-charts
+    const section = document.createElement("div");
+    section.className = "card span-12";
+    section.innerHTML = `
+      <div class="group-title">
+        <span class="legend-swatch" style="background:${color}"></span>
+        <h2 style="color:${color}">${pretty}</h2>
+        <span class="count">${exercises.length} exercises</span>
+      </div>
+      <div class="exercise-grid"></div>
+    `;
+    const grid = section.querySelector(".exercise-grid");
+
+    exercises.forEach(([name, pts], idx) => {
+      // Sort points by date within the exercise
+      const points = [...pts].sort((a, b) => a.date - b.date);
+      const safeId = `ex-${group}-${idx}`;
+
+      const exCard = document.createElement("div");
+      exCard.className = "exercise-card";
+      exCard.innerHTML = `
+        <div class="exercise-card-header">
+          <span class="exercise-card-title">${name}</span>
+          <span class="exercise-card-sub">${points.length} sessions</span>
+        </div>
+        <div id="${safeId}" class="exercise-mini-chart"></div>
+      `;
+      grid.appendChild(exCard);
+
+      const xs = points.map(p => toISODate(p.date));
+      const weights = points.map(p => p.weight);
+      const volumes = points.map(p => p.volume);
+      // Flag cells that used the 3×10 default so the user can tell real data apart
+      const repsLabels = points.map(p =>
+        p.reps ? (p.repsAssumed ? `${p.reps.join(", ")} (assumed)` : p.reps.join(", ")) : ""
+      );
+
+      const traces = [
+        {
+          type: "bar",
+          x: xs,
+          y: volumes,
+          name: "Volume",
+          marker: { color: color, opacity: 0.28 },
+          yaxis: "y2",
+          hovertemplate:
+            `%{x}<br>Volume: %{y} lbs` +
+            `<extra></extra>`,
+        },
+        {
+          type: "scatter",
+          mode: "lines+markers",
+          x: xs,
+          y: weights,
+          name: "Weight",
+          line: { color: color, width: 2 },
+          marker: { size: 4, color: color },
+          customdata: repsLabels,
+          hovertemplate:
+            `%{x}<br>Weight: %{y} lbs` +
+            `%{customdata| <br>Reps: %{customdata}}` +
+            `<extra></extra>`,
+        },
+      ];
+
+      Plotly.newPlot(safeId, traces, {
+        ...layoutDefaults,
+        showlegend: false,
+        margin: { l: 40, r: 40, t: 8, b: 30 },
+        bargap: 0.2,
+        xaxis: {
+          ...layoutDefaults.xaxis,
+          nticks: 4,
+          tickfont: { size: 10 },
+        },
+        yaxis: {
+          ...layoutDefaults.yaxis,
+          title: { text: "lbs", font: { size: 10, color: "#8a93a6" } },
+          tickfont: { size: 10 },
+          rangemode: "tozero",
+        },
+        yaxis2: {
+          overlaying: "y",
+          side: "right",
+          showgrid: false,
+          zeroline: false,
+          tickfont: { size: 10, color: "#8a93a6" },
+          title: { text: "vol", font: { size: 10, color: "#8a93a6" } },
+          rangemode: "tozero",
+        },
+      }, plotlyConfig);
+    });
+
+    container.appendChild(section);
+  }
 }
 
 // ============================================================
