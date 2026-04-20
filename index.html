@@ -113,6 +113,24 @@ const GROUP_COLORS = {
   LEGS:     "#8b5cf6",
 };
 
+// All weights are in pounds.
+// Adrià's bodyweight is ~155 lbs (~70 kg). Update this if it changes significantly —
+// it's used to convert bodyweight-exercise entries into "effective lbs" for volume math.
+const BODYWEIGHT_LBS = 155;
+
+// Exercises where the logged value is "added weight", not total load.
+// Logging convention: "1" means bodyweight only; any other N means BW + N lbs.
+const BODYWEIGHT_EXERCISES = new Set([
+  "Pull Ups",
+  "Pull Ups side to side",
+  "Triceps Dip Bar",
+  "Diamond Pushup",
+  "Biceps Chin Curl",
+]);
+
+// When no reps are logged in the cell, assume 3 sets of 10
+const DEFAULT_REPS = [10, 10, 10];
+
 // ============================================================
 // CSV parsing — transforms wide-format sheet into long-format records
 // ============================================================
@@ -142,23 +160,44 @@ function parseSheetDate(s) {
   return d;
 }
 
-// Extract the max numeric weight from a cell value. Returns null for
-// non-weight data (reps-only notation, text notes, etc.).
-function parseWeight(s) {
-  if (s == null) return null;
+// Parse a cell into { weight, reps }. Handles these notations:
+//   "45"             -> { weight: 45, reps: null }             // no-parens -> DEFAULT_REPS assumed later
+//   "50*"            -> { weight: 50, reps: null }             // PR marker, treated like plain weight
+//   "100 (10,10,9)"  -> { weight: 100, reps: [10,10,9] }       // standard rep notation
+//   "100(10)"        -> { weight: 100, reps: [10] }            // single-set rep notation
+//   "120-100"        -> { weight: 120, reps: null }            // legacy drop set -> take first number
+//   "60(90)"         -> { weight: 60, reps: null }             // legacy (rare now that CSV is cleaned)
+//   ".10,10"         -> { weight: null, reps: null }           // early reps-only entry, skipped
+// Rule: any parens after the weight are interpreted as per-set reps (comma-separated,
+// or a single number). If parens are absent, reps is null and DEFAULT_REPS is applied
+// during long-format build.
+function parseCell(s) {
+  if (s == null) return { weight: null, reps: null };
   const str = String(s).trim();
-  if (!str) return null;
-  // Reps-only entries like ".10,10" or ".12,12,9" are pre-weight-tracking
-  if (/^\./.test(str)) return null;
-  // Strip asterisks (PR markers) and parens-content (machine variant notes)
-  // but keep values inside parens eligible — some cells like "60(90)" seem
-  // to encode machine display vs. real load. Take the max for progression.
+  if (!str) return { weight: null, reps: null };
+  if (/^\./.test(str)) return { weight: null, reps: null };
+
+  // weight with parens: "W (r,r,r)" or "W (r)"
+  const m = str.match(/^(\d+(?:\.\d+)?)\s*\(([^)]*)\)\s*\*?$/);
+  if (m) {
+    const weight = parseFloat(m[1]);
+    const reps = m[2].split(",")
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+      .map(Number)
+      .filter(n => !isNaN(n) && n > 0);
+    return { weight, reps: reps.length ? reps : null };
+  }
+
+  // No parens — take the first number in the cell as the weight.
+  // (Handles "45", "50*", "120-100" drop-set legacy, "110 - incomplete …" notes, etc.)
   const nums = (str.match(/\d+(?:\.\d+)?/g) || []).map(Number).filter(n => !isNaN(n));
-  if (nums.length === 0) return null;
-  // Heuristic: ignore a leading 0 (rare), prefer the largest value seen.
-  // This captures PRs and both sides of drop-sets / parenthetical variants.
-  return Math.max(...nums);
+  if (nums.length === 0) return { weight: null, reps: null };
+  return { weight: nums[0], reps: null };
 }
+
+// Backwards compat alias for anything still calling parseWeight
+function parseWeight(s) { return parseCell(s).weight; }
 
 // Build the long-format records from parsed CSV matrix.
 function buildLongFormat(rows) {
@@ -197,11 +236,27 @@ function buildLongFormat(rows) {
     const exs = [];
     for (const m of exerciseMeta) {
       const raw = rows[m.rowIdx] ? rows[m.rowIdx][c] : "";
-      const w = parseWeight(raw);
-      if (w != null) {
-        exs.push({ group: m.group, name: m.name, weight: w });
-        records.push({ date, group: m.group, exercise: m.name, weight: w });
-      }
+      const { weight: rawWeight, reps: rawReps } = parseCell(raw);
+      if (rawWeight == null) continue;
+
+      // Bodyweight exercises: logged value is "added weight", not total load.
+      //   "1"   -> just bodyweight (no added load)
+      //   "10"  -> bodyweight + 10 lbs
+      // For everything else the logged weight IS the load.
+      const isBW = BODYWEIGHT_EXERCISES.has(m.name);
+      const added = isBW ? (rawWeight > 1 ? rawWeight : 0) : 0;
+      const weight = isBW ? BODYWEIGHT_LBS + added : rawWeight;
+
+      // If no reps were logged, assume the default (3×10). This makes volume
+      // computable for every cell, including old pre-reps entries.
+      const reps = rawReps || DEFAULT_REPS.slice();
+      const volume = weight * reps.reduce((s, r) => s + r, 0);
+
+      const entry = { group: m.group, name: m.name, weight, reps, volume,
+                      rawWeight, isBW, repsAssumed: !rawReps };
+      exs.push(entry);
+      records.push({ date, group: m.group, exercise: m.name, weight, reps, volume,
+                     rawWeight, isBW, repsAssumed: !rawReps });
     }
     if (exs.length > 0) {
       sessions.push({ date, sessionType, exercises: exs, colIdx: c });
@@ -269,12 +324,17 @@ function longestStreak(sessions) {
   return best;
 }
 
-// Max weight progression per exercise: Map<exercise, [{date, weight (cum-max)}]>
+// Per-exercise session history: Map<exercise, [{date, weight, reps, volume, ...}]>
+// Weight here is the per-session value (or BW + added for bodyweight exercises), not a cum-max.
 function progressionByExercise(records) {
   const byEx = new Map();
   for (const r of records) {
     if (!byEx.has(r.exercise)) byEx.set(r.exercise, []);
-    byEx.get(r.exercise).push({ date: r.date, weight: r.weight, group: r.group });
+    byEx.get(r.exercise).push({
+      date: r.date, weight: r.weight, group: r.group,
+      reps: r.reps, volume: r.volume,
+      rawWeight: r.rawWeight, isBW: r.isBW, repsAssumed: r.repsAssumed,
+    });
   }
   for (const arr of byEx.values()) arr.sort((a, b) => a.date - b.date);
   return byEx;
@@ -362,6 +422,12 @@ function renderDashboard(data) {
       </div>
       <div id="chart-progression" class="chart chart-tall"></div>
     </div>
+
+    <div class="card span-12">
+      <h2>Volume per session</h2>
+      <div id="volume-hint" class="stat-sub" style="margin-bottom: 8px"></div>
+      <div id="chart-volume" class="chart"></div>
+    </div>
   `;
 
   // --- Stat tiles ---
@@ -420,6 +486,9 @@ function renderDashboard(data) {
   groupSel.addEventListener("change", redraw);
   minSel.addEventListener("change", redraw);
   redraw();
+
+  // --- Volume ---
+  renderVolume(sessions, records);
 }
 
 function renderWeekly(sessions) {
@@ -458,6 +527,9 @@ function renderGroups(sessions) {
     for (const g of groupsHit) counts[g] = (counts[g] || 0) + 1;
   }
   const keys = MUSCLE_GROUPS;
+  const maxCount = Math.max(1, ...keys.map(g => counts[g]));
+  // Pick a tick interval that avoids overcrowding
+  const dtick = maxCount <= 10 ? 1 : maxCount <= 30 ? 5 : 10;
   Plotly.newPlot("chart-groups", [{
     type: "bar",
     orientation: "h",
@@ -468,7 +540,15 @@ function renderGroups(sessions) {
   }], {
     ...layoutDefaults,
     margin: { l: 80, r: 16, t: 10, b: 40 },
-    xaxis: { ...layoutDefaults.xaxis, dtick: 1 },
+    xaxis: {
+      ...layoutDefaults.xaxis,
+      type: "linear",         // force numeric, not date-inferred
+      tickmode: "linear",
+      tick0: 0,
+      dtick: dtick,
+      tickformat: "d",        // integer formatting
+      rangemode: "tozero",
+    },
     yaxis: { ...layoutDefaults.yaxis, automargin: true },
   }, plotlyConfig);
 }
@@ -541,16 +621,33 @@ function renderProgression(progMap, groupFilter, minPoints) {
     // Plot the actual weight used on each session (not a cumulative max).
     // This reflects real day-to-day variation including deloads and lighter days.
     const group = points[0].group;
+    // Per-point custom data holds reps/volume/flags so the tooltip can show context
+    const customdata = points.map(p => {
+      const repsStr = p.reps
+        ? (p.repsAssumed ? `${p.reps.join(", ")} (assumed)` : p.reps.join(", "))
+        : "";
+      const volStr = p.volume != null ? `${p.volume}` : "";
+      const bwStr = p.isBW && p.rawWeight != null
+        ? (p.rawWeight > 1 ? `BW + ${p.rawWeight} lbs` : "bodyweight only")
+        : "";
+      return [repsStr, volStr, bwStr];
+    });
     traces.push({
       type: "scatter",
       mode: "lines+markers",
       name: name,
       x: points.map(p => toISODate(p.date)),
       y: points.map(p => p.weight),
+      customdata,
       line: { color: GROUP_COLORS[group] || "#7c9cff", width: 2, shape: "linear" },
       marker: { size: 5 },
       connectgaps: true,
-      hovertemplate: `<b>${name}</b><br>%{x}<br>%{y} kg<extra></extra>`,
+      hovertemplate:
+        `<b>${name}</b><br>%{x}<br>%{y} lbs` +
+        `%{customdata[2]| <br>%{customdata[2]}}` +
+        `%{customdata[0]| <br>Reps: %{customdata[0]}}` +
+        `%{customdata[1]| <br>Volume: %{customdata[1]} lbs}` +
+        `<extra></extra>`,
     });
   }
 
@@ -559,7 +656,59 @@ function renderProgression(progMap, groupFilter, minPoints) {
     showlegend: true,
     legend: { orientation: "v", x: 1.02, y: 1, font: { size: 11 } },
     margin: { l: 50, r: 180, t: 10, b: 40 },
-    yaxis: { ...layoutDefaults.yaxis, title: "kg" },
+    yaxis: { ...layoutDefaults.yaxis, title: "lbs" },
+  }, plotlyConfig);
+}
+
+function renderVolume(sessions, records) {
+  const withReps = records.filter(r => r.reps && r.volume != null);
+  const hint = document.getElementById("volume-hint");
+  const chartDiv = document.getElementById("chart-volume");
+
+  if (withReps.length === 0) {
+    hint.innerHTML =
+      `No volume data yet. Log cells as <code>100(10,10,9)</code> ` +
+      `(weight with comma-separated reps) and volume will show up here.`;
+    chartDiv.style.display = "none";
+    return;
+  }
+  chartDiv.style.display = "";
+
+  // Sum volume per session date (across all exercises)
+  const perDay = new Map(); // dateISO -> { total, breakdown: {group: number} }
+  for (const r of withReps) {
+    const k = toISODate(r.date);
+    if (!perDay.has(k)) perDay.set(k, { total: 0, breakdown: {} });
+    const d = perDay.get(k);
+    d.total += r.volume;
+    d.breakdown[r.group] = (d.breakdown[r.group] || 0) + r.volume;
+  }
+  const dates = [...perDay.keys()].sort();
+  const logged = withReps.filter(r => !r.repsAssumed).length;
+  const assumed = withReps.length - logged;
+  const coveredSessions = perDay.size;
+  hint.textContent =
+    `Volume = weight × total reps (lbs). ` +
+    `${logged} entries with logged reps, ${assumed} assuming default 3×10, ` +
+    `across ${coveredSessions} sessions. Bodyweight exercises use ${BODYWEIGHT_LBS} lbs + any added load.`;
+
+  // Stacked bar by muscle group so you can see which groups drove the day's volume
+  const traces = MUSCLE_GROUPS.map(g => ({
+    type: "bar",
+    name: g[0] + g.slice(1).toLowerCase(),
+    x: dates,
+    y: dates.map(d => perDay.get(d).breakdown[g] || 0),
+    marker: { color: GROUP_COLORS[g] },
+    hovertemplate: `<b>${g[0] + g.slice(1).toLowerCase()}</b><br>%{x}<br>%{y} lbs<extra></extra>`,
+  })).filter(t => t.y.some(v => v > 0));
+
+  Plotly.newPlot("chart-volume", traces, {
+    ...layoutDefaults,
+    barmode: "stack",
+    showlegend: true,
+    legend: { orientation: "h", y: -0.25, font: { size: 11 } },
+    margin: { l: 60, r: 16, t: 10, b: 60 },
+    yaxis: { ...layoutDefaults.yaxis, title: "lbs (weight × reps)" },
   }, plotlyConfig);
 }
 
