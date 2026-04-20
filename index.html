@@ -797,6 +797,9 @@ function renderPerExerciseBreakdown(records) {
       </div>
       <div class="exercise-grid"></div>
     `;
+    // IMPORTANT: attach section to the document BEFORE calling Plotly.newPlot,
+    // otherwise Plotly throws "No DOM element with id ... exists on the page".
+    container.appendChild(section);
     const grid = section.querySelector(".exercise-grid");
 
     exercises.forEach(([name, pts], idx) => {
@@ -878,8 +881,6 @@ function renderPerExerciseBreakdown(records) {
         },
       }, plotlyConfig);
     });
-
-    container.appendChild(section);
   }
 }
 
