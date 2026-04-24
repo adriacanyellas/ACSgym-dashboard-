@@ -194,6 +194,9 @@ function buildLongFormat(rows) {
     if (!date) continue; // skip anomaly columns (January 2024, MAX, etc.)
 
     const sessionType = (typeRow[c] || "").trim();
+    // A "real" session-type label is non-numeric (early cols in row 0 contain a
+    // running tally like 0, 2, 4, ... which we should NOT treat as session labels).
+    const hasLabel = sessionType && !/^\d+$/.test(sessionType);
     const exs = [];
     for (const m of exerciseMeta) {
       const raw = rows[m.rowIdx] ? rows[m.rowIdx][c] : "";
@@ -207,7 +210,11 @@ function buildLongFormat(rows) {
         exs.push({ group: m.group, name: m.name, weight: null });
       }
     }
-    if (exs.length > 0) {
+    // Count the column as a session if either:
+    //   (a) at least one exercise cell is filled, OR
+    //   (b) there's a non-numeric session-type label in row 0 (e.g. "Push",
+    //       "Calisthenics", "PT Legs") — handles days logged as just a label + date.
+    if (exs.length > 0 || hasLabel) {
       sessions.push({ date, sessionType, exercises: exs, colIdx: c });
     }
   }
@@ -472,8 +479,14 @@ function renderGroups(sessions) {
   }], {
     ...layoutDefaults,
     margin: { l: 80, r: 16, t: 10, b: 40 },
-    xaxis: { ...layoutDefaults.xaxis, dtick: 1 },
-    yaxis: { ...layoutDefaults.yaxis, automargin: true },
+    xaxis: {
+      ...layoutDefaults.xaxis,
+      type: "linear",       // prevent Plotly auto-detecting x-values as dates
+      tickformat: "d",      // integer tick labels
+      rangemode: "tozero",
+      dtick: 1,
+    },
+    yaxis: { ...layoutDefaults.yaxis, type: "category", automargin: true },
   }, plotlyConfig);
 }
 
@@ -558,11 +571,19 @@ function renderProgression(progMap, groupFilter, minPoints) {
     });
   }
 
+  // Responsive layout: legend goes below on narrow screens (mobile) to avoid
+  // eating chart width; stays on the right on wider screens.
+  const isNarrow = window.innerWidth < 720;
   Plotly.newPlot("chart-progression", traces, {
     ...layoutDefaults,
     showlegend: true,
-    legend: { orientation: "v", x: 1.02, y: 1, font: { size: 11 } },
-    margin: { l: 50, r: 180, t: 10, b: 40 },
+    legend: isNarrow
+      ? { orientation: "h", x: 0, y: -0.2, font: { size: 10 } }
+      : { orientation: "v", x: 1.02, y: 1, font: { size: 11 } },
+    margin: isNarrow
+      ? { l: 44, r: 16, t: 10, b: 100 }
+      : { l: 50, r: 180, t: 10, b: 40 },
+    xaxis: { ...layoutDefaults.xaxis, type: "date" },
     yaxis: { ...layoutDefaults.yaxis, title: "kg" },
   }, plotlyConfig);
 }
