@@ -83,6 +83,27 @@
   }
   .heatmap-legend { color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 4px }
   .heatmap-cell-sample { width: 10px; height: 10px; border-radius: 2px; display: inline-block }
+  .group-title { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px 0; }
+  .group-title h2 { margin: 0; font-size: 15px; text-transform: uppercase; letter-spacing: .05em; }
+  .group-title .count { color: var(--muted); font-size: 12px; }
+  .exercise-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 12px;
+  }
+  .exercise-card {
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 10px 4px 10px;
+  }
+  .exercise-card-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 4px;
+  }
+  .exercise-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .exercise-card-sub { color: var(--muted); font-size: 11px; font-weight: 400; }
+  .exercise-mini-chart { width: 100%; height: 170px; }
 </style>
 </head>
 <body>
@@ -113,6 +134,24 @@ const GROUP_COLORS = {
   LEGS:     "#8b5cf6",
 };
 
+// All weights are in pounds.
+// Adrià's bodyweight is ~155 lbs (~70 kg). Update this if it changes significantly —
+// it's used to convert bodyweight-exercise entries into "effective lbs" for volume math.
+const BODYWEIGHT_LBS = 155;
+
+// Exercises where the logged value is "added weight", not total load.
+// Logging convention: "1" means bodyweight only; any other N means BW + N lbs.
+const BODYWEIGHT_EXERCISES = new Set([
+  "Pull Ups",
+  "Pull Ups side to side",
+  "Triceps Dip Bar",
+  "Diamond Pushup",
+  "Biceps Chin Curl",
+]);
+
+// When no reps are logged in the cell, assume 3 sets of 10
+const DEFAULT_REPS = [10, 10, 10];
+
 // ============================================================
 // CSV parsing — transforms wide-format sheet into long-format records
 // ============================================================
@@ -142,23 +181,44 @@ function parseSheetDate(s) {
   return d;
 }
 
-// Extract the max numeric weight from a cell value. Returns null for
-// non-weight data (reps-only notation, text notes, etc.).
-function parseWeight(s) {
-  if (s == null) return null;
+// Parse a cell into { weight, reps }. Handles these notations:
+//   "45"             -> { weight: 45, reps: null }             // no-parens -> DEFAULT_REPS assumed later
+//   "50*"            -> { weight: 50, reps: null }             // PR marker, treated like plain weight
+//   "100 (10,10,9)"  -> { weight: 100, reps: [10,10,9] }       // standard rep notation
+//   "100(10)"        -> { weight: 100, reps: [10] }            // single-set rep notation
+//   "120-100"        -> { weight: 120, reps: null }            // legacy drop set -> take first number
+//   "60(90)"         -> { weight: 60, reps: null }             // legacy (rare now that CSV is cleaned)
+//   ".10,10"         -> { weight: null, reps: null }           // early reps-only entry, skipped
+// Rule: any parens after the weight are interpreted as per-set reps (comma-separated,
+// or a single number). If parens are absent, reps is null and DEFAULT_REPS is applied
+// during long-format build.
+function parseCell(s) {
+  if (s == null) return { weight: null, reps: null };
   const str = String(s).trim();
-  if (!str) return null;
-  // Reps-only entries like ".10,10" or ".12,12,9" are pre-weight-tracking
-  if (/^\./.test(str)) return null;
-  // Strip asterisks (PR markers) and parens-content (machine variant notes)
-  // but keep values inside parens eligible — some cells like "60(90)" seem
-  // to encode machine display vs. real load. Take the max for progression.
+  if (!str) return { weight: null, reps: null };
+  if (/^\./.test(str)) return { weight: null, reps: null };
+
+  // weight with parens: "W (r,r,r)" or "W (r)"
+  const m = str.match(/^(\d+(?:\.\d+)?)\s*\(([^)]*)\)\s*\*?$/);
+  if (m) {
+    const weight = parseFloat(m[1]);
+    const reps = m[2].split(",")
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+      .map(Number)
+      .filter(n => !isNaN(n) && n > 0);
+    return { weight, reps: reps.length ? reps : null };
+  }
+
+  // No parens — take the first number in the cell as the weight.
+  // (Handles "45", "50*", "120-100" drop-set legacy, "110 - incomplete …" notes, etc.)
   const nums = (str.match(/\d+(?:\.\d+)?/g) || []).map(Number).filter(n => !isNaN(n));
-  if (nums.length === 0) return null;
-  // Heuristic: ignore a leading 0 (rare), prefer the largest value seen.
-  // This captures PRs and both sides of drop-sets / parenthetical variants.
-  return Math.max(...nums);
+  if (nums.length === 0) return { weight: null, reps: null };
+  return { weight: nums[0], reps: null };
 }
+
+// Backwards compat alias for anything still calling parseWeight
+function parseWeight(s) { return parseCell(s).weight; }
 
 // Build the long-format records from parsed CSV matrix.
 function buildLongFormat(rows) {
@@ -194,32 +254,33 @@ function buildLongFormat(rows) {
     if (!date) continue; // skip anomaly columns (January 2024, MAX, etc.)
 
     const sessionType = (typeRow[c] || "").trim();
-    // A "real" session-type label is non-numeric (early cols in row 0 contain a
-    // running tally like 0, 2, 4, ... which we should NOT treat as session labels).
-    const hasLabel = sessionType && !/^\d+$/.test(sessionType);
     const exs = [];
     for (const m of exerciseMeta) {
       const raw = rows[m.rowIdx] ? rows[m.rowIdx][c] : "";
-      const w = parseWeight(raw);
-      if (w != null) {
-        exs.push({ group: m.group, name: m.name, weight: w });
-        records.push({ date, group: m.group, exercise: m.name, weight: w });
-      } else if (String(raw || "").trim()) {
-        // Reps-only or text entry (calisthenics: pull-ups, dips, etc.) — no weight,
-        // but counts toward session frequency, streaks, calendar, and muscle-group totals.
-        exs.push({ group: m.group, name: m.name, weight: null });
-      }
+      const { weight: rawWeight, reps: rawReps } = parseCell(raw);
+      if (rawWeight == null) continue;
+
+      // Bodyweight exercises: logged value is "added weight", not total load.
+      //   "1"   -> just bodyweight (no added load)
+      //   "10"  -> bodyweight + 10 lbs
+      // For everything else the logged weight IS the load.
+      const isBW = BODYWEIGHT_EXERCISES.has(m.name);
+      const added = isBW ? (rawWeight > 1 ? rawWeight : 0) : 0;
+      const weight = isBW ? BODYWEIGHT_LBS + added : rawWeight;
+
+      // If no reps were logged, assume the default (3×10). This makes volume
+      // computable for every cell, including old pre-reps entries.
+      const reps = rawReps || DEFAULT_REPS.slice();
+      const volume = weight * reps.reduce((s, r) => s + r, 0);
+
+      const entry = { group: m.group, name: m.name, weight, reps, volume,
+                      rawWeight, isBW, repsAssumed: !rawReps };
+      exs.push(entry);
+      records.push({ date, group: m.group, exercise: m.name, weight, reps, volume,
+                     rawWeight, isBW, repsAssumed: !rawReps });
     }
-    // Count the column as a session if either:
-    //   (a) at least one exercise cell is filled, OR
-    //   (b) there's a non-numeric session-type label in row 0 (e.g. "Push",
-    //       "Calisthenics", "PT Legs") — handles days logged as just a label + date.
-    if (exs.length > 0 || hasLabel) {
+    if (exs.length > 0) {
       sessions.push({ date, sessionType, exercises: exs, colIdx: c });
-    } else {
-      // Diagnostic: log columns with a valid date that we decided NOT to count as a session,
-      // so issues like "calisthenics day not counted" can be debugged from the browser console.
-      console.warn(`[session skipped] col ${c} date=${toISODate(date)} type=${JSON.stringify(sessionType)} reason=no-exercises-and-no-label`);
     }
   }
 
@@ -284,12 +345,17 @@ function longestStreak(sessions) {
   return best;
 }
 
-// Max weight progression per exercise: Map<exercise, [{date, weight (cum-max)}]>
+// Per-exercise session history: Map<exercise, [{date, weight, reps, volume, ...}]>
+// Weight here is the per-session value (or BW + added for bodyweight exercises), not a cum-max.
 function progressionByExercise(records) {
   const byEx = new Map();
   for (const r of records) {
     if (!byEx.has(r.exercise)) byEx.set(r.exercise, []);
-    byEx.get(r.exercise).push({ date: r.date, weight: r.weight, group: r.group });
+    byEx.get(r.exercise).push({
+      date: r.date, weight: r.weight, group: r.group,
+      reps: r.reps, volume: r.volume,
+      rawWeight: r.rawWeight, isBW: r.isBW, repsAssumed: r.repsAssumed,
+    });
   }
   for (const arr of byEx.values()) arr.sort((a, b) => a.date - b.date);
   return byEx;
@@ -306,7 +372,11 @@ const layoutDefaults = {
   margin: { l: 48, r: 20, t: 10, b: 40 },
   xaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
   yaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
-  hoverlabel: { bgcolor: "#1c2230", bordercolor: "#252c3a" },
+  hoverlabel: {
+    bgcolor: "#1c2230",
+    bordercolor: "#252c3a",
+    font: { color: "#ffffff", size: 12 },
+  },
 };
 const plotlyConfig = { responsive: true, displayModeBar: false };
 
@@ -347,7 +417,20 @@ function renderDashboard(data) {
     </div>
 
     <div class="card span-12">
-      <h2>Max weight progression</h2>
+      <h2>Gym calendar</h2>
+      <div id="chart-calendar" class="chart"></div>
+      <div class="heatmap-legend">
+        Less
+        <span class="heatmap-cell-sample" style="background:#1a2030"></span>
+        <span class="heatmap-cell-sample" style="background:#2d4a3e"></span>
+        <span class="heatmap-cell-sample" style="background:#3fa66b"></span>
+        <span class="heatmap-cell-sample" style="background:#4ade80"></span>
+        More
+      </div>
+    </div>
+
+    <div class="card span-12">
+      <h2>Weight per session</h2>
       <div class="row" style="margin-bottom: 10px">
         <label for="filter-group">Muscle group</label>
         <select id="filter-group">
@@ -366,17 +449,12 @@ function renderDashboard(data) {
     </div>
 
     <div class="card span-12">
-      <h2>Gym calendar</h2>
-      <div id="chart-calendar" class="chart"></div>
-      <div class="heatmap-legend">
-        Less
-        <span class="heatmap-cell-sample" style="background:#1a2030"></span>
-        <span class="heatmap-cell-sample" style="background:#2d4a3e"></span>
-        <span class="heatmap-cell-sample" style="background:#3fa66b"></span>
-        <span class="heatmap-cell-sample" style="background:#4ade80"></span>
-        More
-      </div>
+      <h2>Volume per session</h2>
+      <div id="volume-hint" class="stat-sub" style="margin-bottom: 8px"></div>
+      <div id="chart-volume" class="chart"></div>
     </div>
+
+    <div id="per-exercise-sections" class="span-12" style="display: contents"></div>
   `;
 
   // --- Stat tiles ---
@@ -421,29 +499,26 @@ function renderDashboard(data) {
   document.getElementById("data-status").textContent =
     `${total} sessions · ${records.length} exercise entries · auto-refreshed on page load`;
 
-  // Defensive: wrap each chart so one failure doesn't prevent the others (esp. progression)
-  // from rendering. Errors are logged to the browser console for debugging.
-  const safe = (name, fn) => {
-    try { fn(); } catch (err) { console.error(`[chart render failed: ${name}]`, err); }
-  };
+  // --- Weekly frequency chart ---
+  renderWeekly(sessions);
+  // --- Muscle group distribution (last 90 days) ---
+  renderGroups(sessions);
+  // --- Calendar heatmap ---
+  renderCalendar(sessions);
+  // --- Progression ---
+  const progression = progressionByExercise(records);
+  const groupSel = document.getElementById("filter-group");
+  const minSel = document.getElementById("filter-min");
+  const redraw = () => renderProgression(progression, groupSel.value, parseInt(minSel.value, 10));
+  groupSel.addEventListener("change", redraw);
+  minSel.addEventListener("change", redraw);
+  redraw();
 
-  safe("weekly", () => renderWeekly(sessions));
-  safe("groups", () => renderGroups(sessions));
-  safe("calendar", () => renderCalendar(sessions));
+  // --- Volume ---
+  renderVolume(sessions, records);
 
-  // --- Progression (individual exercise PR plots) ---
-  safe("progression-setup", () => {
-    const progression = progressionByExercise(records);
-    const groupSel = document.getElementById("filter-group");
-    const minSel = document.getElementById("filter-min");
-    const redraw = () => {
-      try { renderProgression(progression, groupSel.value, parseInt(minSel.value, 10)); }
-      catch (err) { console.error("[progression redraw failed]", err); }
-    };
-    groupSel.addEventListener("change", redraw);
-    minSel.addEventListener("change", redraw);
-    redraw();
-  });
+  // --- Per-exercise breakdown (one section per muscle group) ---
+  renderPerExerciseBreakdown(records);
 }
 
 function renderWeekly(sessions) {
@@ -467,7 +542,15 @@ function renderWeekly(sessions) {
     hovertemplate: "Week of %{x}<br>%{y} sessions<extra></extra>",
   }], {
     ...layoutDefaults,
-    margin: { l: 40, r: 16, t: 10, b: 40 },
+    margin: { l: 40, r: 16, t: 10, b: 70 },
+    xaxis: {
+      ...layoutDefaults.xaxis,
+      type: "date",
+      dtick: "M1",           // one tick per month
+      tickformat: "%b '%y",  // e.g. "Jan '24"
+      tickangle: -45,
+      tickfont: { size: 10 },
+    },
     yaxis: { ...layoutDefaults.yaxis, title: "", dtick: 1 },
   }, plotlyConfig);
 }
@@ -482,6 +565,9 @@ function renderGroups(sessions) {
     for (const g of groupsHit) counts[g] = (counts[g] || 0) + 1;
   }
   const keys = MUSCLE_GROUPS;
+  const maxCount = Math.max(1, ...keys.map(g => counts[g]));
+  // Pick a tick interval that avoids overcrowding
+  const dtick = maxCount <= 10 ? 1 : maxCount <= 30 ? 5 : 10;
   Plotly.newPlot("chart-groups", [{
     type: "bar",
     orientation: "h",
@@ -494,12 +580,14 @@ function renderGroups(sessions) {
     margin: { l: 80, r: 16, t: 10, b: 40 },
     xaxis: {
       ...layoutDefaults.xaxis,
-      type: "linear",       // prevent Plotly auto-detecting x-values as dates
-      tickformat: "d",      // integer tick labels
+      type: "linear",         // force numeric, not date-inferred
+      tickmode: "linear",
+      tick0: 0,
+      dtick: dtick,
+      tickformat: "d",        // integer formatting
       rangemode: "tozero",
-      dtick: 1,
     },
-    yaxis: { ...layoutDefaults.yaxis, type: "category", automargin: true },
+    yaxis: { ...layoutDefaults.yaxis, automargin: true },
   }, plotlyConfig);
 }
 
@@ -558,143 +646,241 @@ function renderCalendar(sessions) {
   }, plotlyConfig);
 }
 
-// Build an inline SVG sparkline showing the cumulative-max progression of
-// one exercise. No plotly overhead — 40+ of these render instantly.
-function sparklineSvg(points, cumMax, color, height = 90) {
-  const width = 260; // nominal viewBox width; SVG scales to container
-  const padX = 6, padT = 6, padB = 18;
-  const plotW = width - 2 * padX;
-  const plotH = height - padT - padB;
-
-  const xs = points.map(p => p.date.getTime());
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const xRange = (maxX - minX) || 1;
-  const minY = Math.min(...cumMax);
-  const maxY = Math.max(...cumMax);
-  const yRange = (maxY - minY) || 1;
-  const yPad = yRange * 0.15; // breathing room above/below
-
-  const coords = points.map((p, i) => {
-    const x = padX + ((p.date.getTime() - minX) / xRange) * plotW;
-    const y = padT + plotH - ((cumMax[i] - minY + yPad) / (yRange + 2 * yPad)) * plotH;
-    return [x, y];
-  });
-
-  const linePath = coords.map((c, i) => (i === 0 ? "M" : "L") + c[0].toFixed(1) + "," + c[1].toFixed(1)).join(" ");
-  const areaPath = linePath
-    + ` L${coords[coords.length - 1][0].toFixed(1)},${(padT + plotH).toFixed(1)}`
-    + ` L${padX.toFixed(1)},${(padT + plotH).toFixed(1)} Z`;
-
-  // Dots sized by "is this a new PR?" — larger when cumMax increased here.
-  const dots = points.map((p, i) => {
-    const isNewMax = i === 0 || cumMax[i] > cumMax[i - 1];
-    const r = isNewMax ? 2.4 : 1.4;
-    const title = `${toISODate(p.date)} — max ${cumMax[i]}kg`;
-    return `<circle cx="${coords[i][0].toFixed(1)}" cy="${coords[i][1].toFixed(1)}" r="${r}" fill="${color}"><title>${title}</title></circle>`;
-  }).join("");
-
-  // Date labels (first + last)
-  const fmt = d => `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCFullYear()).slice(2)}`;
-  const firstLabel = fmt(points[0].date);
-  const lastLabel = fmt(points[points.length - 1].date);
-
-  return `
-    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"
-         style="width:100%;height:${height}px;display:block;overflow:visible">
-      <path d="${areaPath}" fill="${color}" opacity="0.18"/>
-      <path d="${linePath}" stroke="${color}" stroke-width="1.8"
-            fill="none" stroke-linejoin="round" stroke-linecap="round"/>
-      ${dots}
-      <text x="${padX}" y="${height - 4}" font-size="9" fill="#8a93a6">${firstLabel}</text>
-      <text x="${width - padX}" y="${height - 4}" font-size="9" fill="#8a93a6" text-anchor="end">${lastLabel}</text>
-    </svg>
-  `;
-}
-
 function renderProgression(progMap, groupFilter, minPoints) {
-  const container = document.getElementById("chart-progression");
-  // The container was styled as a fixed-height Plotly chart; strip that so the
-  // grid can grow naturally with its content.
-  container.classList.remove("chart", "chart-tall");
-  container.style.display = "grid";
-  container.style.gridTemplateColumns = "repeat(auto-fill, minmax(220px, 1fr))";
-  container.style.gap = "12px";
-  container.style.minHeight = "200px";
-  container.innerHTML = "";
-
+  const traces = [];
   const entries = [...progMap.entries()]
     .filter(([name, points]) => points.length >= minPoints)
     .filter(([name, points]) => groupFilter === "ALL" || points[0].group === groupFilter);
 
-  // Sort by muscle group (sheet order) then alphabetical within group.
-  entries.sort((a, b) => {
-    const ga = MUSCLE_GROUPS.indexOf(a[1][0].group);
-    const gb = MUSCLE_GROUPS.indexOf(b[1][0].group);
-    if (ga !== gb) return ga - gb;
-    return a[0].localeCompare(b[0]);
-  });
-
-  if (entries.length === 0) {
-    container.style.display = "flex";
-    container.style.alignItems = "center";
-    container.style.justifyContent = "center";
-    container.innerHTML =
-      `<div style="color: var(--muted); padding: 40px; text-align: center;">
-         No exercises match the current filters.<br>
-         Try lowering min data points or selecting a different group.
-       </div>`;
-    return;
-  }
+  // Sort for a stable legend order
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
 
   for (const [name, points] of entries) {
-    // Cumulative max tracks PR progression (monotone non-decreasing).
-    let cmax = -Infinity;
-    const cumMax = points.map(p => { cmax = Math.max(cmax, p.weight); return cmax; });
-    const peak = cmax;
+    // Plot the actual weight used on each session (not a cumulative max).
+    // This reflects real day-to-day variation including deloads and lighter days.
     const group = points[0].group;
-    const color = GROUP_COLORS[group] || "#7c9cff";
+    // Per-point custom data holds reps/volume/flags so the tooltip can show context
+    const customdata = points.map(p => {
+      const repsStr = p.reps
+        ? (p.repsAssumed ? `${p.reps.join(", ")} (assumed)` : p.reps.join(", "))
+        : "";
+      const volStr = p.volume != null ? `${p.volume}` : "";
+      const bwStr = p.isBW && p.rawWeight != null
+        ? (p.rawWeight > 1 ? `BW + ${p.rawWeight} lbs` : "bodyweight only")
+        : "";
+      return [repsStr, volStr, bwStr];
+    });
+    traces.push({
+      type: "scatter",
+      mode: "lines+markers",
+      name: name,
+      x: points.map(p => toISODate(p.date)),
+      y: points.map(p => p.weight),
+      customdata,
+      line: { color: GROUP_COLORS[group] || "#7c9cff", width: 2, shape: "linear" },
+      marker: { size: 5 },
+      connectgaps: true,
+      hovertemplate:
+        `<b>${name}</b><br>%{x}<br>%{y} lbs` +
+        `%{customdata[2]| <br>%{customdata[2]}}` +
+        `%{customdata[0]| <br>Reps: %{customdata[0]}}` +
+        `%{customdata[1]| <br>Volume: %{customdata[1]} lbs}` +
+        `<extra></extra>`,
+    });
+  }
 
-    // Progress since the first data point — useful at-a-glance delta.
-    const firstMax = cumMax[0];
-    const delta = peak - firstMax;
-    const deltaStr = delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : "±0";
-    const deltaColor = delta > 0 ? "var(--good)" : delta < 0 ? "var(--bad)" : "var(--muted)";
+  Plotly.newPlot("chart-progression", traces, {
+    ...layoutDefaults,
+    showlegend: true,
+    legend: { orientation: "v", x: 1.02, y: 1, font: { size: 11 } },
+    margin: { l: 50, r: 180, t: 10, b: 70 },
+    xaxis: {
+      ...layoutDefaults.xaxis,
+      type: "date",
+      dtick: "M1",
+      tickformat: "%b '%y",
+      tickangle: -45,
+      tickfont: { size: 10 },
+    },
+    yaxis: { ...layoutDefaults.yaxis, title: "lbs" },
+  }, plotlyConfig);
+}
 
-    const card = document.createElement("div");
-    card.style.cssText = `
-      background: var(--panel2);
-      border: 1px solid var(--border);
-      border-left: 3px solid ${color};
-      border-radius: 8px;
-      padding: 10px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      min-height: 0;
-    `;
-    card.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
-        <div style="min-width: 0; flex: 1;">
-          <div style="font-size: 12px; font-weight: 600; color: var(--text); line-height: 1.25;
-                      overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
-                      -webkit-line-clamp: 2; -webkit-box-orient: vertical;" title="${name}">${name}</div>
-          <div style="font-size: 9px; color: ${color}; text-transform: uppercase;
-                      letter-spacing: 0.05em; margin-top: 2px; font-weight: 600;">${group}</div>
-        </div>
-        <div style="text-align: right; flex-shrink: 0;">
-          <div style="font-size: 18px; font-weight: 700; color: var(--text); line-height: 1;">
-            ${peak}<span style="font-size: 10px; color: var(--muted); font-weight: 500; margin-left: 2px;">kg</span>
-          </div>
-          <div style="font-size: 10px; color: ${deltaColor}; margin-top: 2px;">${deltaStr} kg</div>
-        </div>
+function renderVolume(sessions, records) {
+  const withReps = records.filter(r => r.reps && r.volume != null);
+  const hint = document.getElementById("volume-hint");
+  const chartDiv = document.getElementById("chart-volume");
+
+  if (withReps.length === 0) {
+    hint.innerHTML =
+      `No volume data yet. Log cells as <code>100(10,10,9)</code> ` +
+      `(weight with comma-separated reps) and volume will show up here.`;
+    chartDiv.style.display = "none";
+    return;
+  }
+  chartDiv.style.display = "";
+
+  // Sum volume per session date (across all exercises)
+  const perDay = new Map(); // dateISO -> { total, breakdown: {group: number} }
+  for (const r of withReps) {
+    const k = toISODate(r.date);
+    if (!perDay.has(k)) perDay.set(k, { total: 0, breakdown: {} });
+    const d = perDay.get(k);
+    d.total += r.volume;
+    d.breakdown[r.group] = (d.breakdown[r.group] || 0) + r.volume;
+  }
+  const dates = [...perDay.keys()].sort();
+  const logged = withReps.filter(r => !r.repsAssumed).length;
+  const assumed = withReps.length - logged;
+  const coveredSessions = perDay.size;
+  hint.textContent =
+    `Volume = weight × total reps (lbs). ` +
+    `${logged} entries with logged reps, ${assumed} assuming default 3×10, ` +
+    `across ${coveredSessions} sessions. Bodyweight exercises use ${BODYWEIGHT_LBS} lbs + any added load.`;
+
+  // Stacked bar by muscle group so you can see which groups drove the day's volume
+  const traces = MUSCLE_GROUPS.map(g => ({
+    type: "bar",
+    name: g[0] + g.slice(1).toLowerCase(),
+    x: dates,
+    y: dates.map(d => perDay.get(d).breakdown[g] || 0),
+    marker: { color: GROUP_COLORS[g] },
+    hovertemplate: `<b>${g[0] + g.slice(1).toLowerCase()}</b><br>%{x}<br>%{y} lbs<extra></extra>`,
+  })).filter(t => t.y.some(v => v > 0));
+
+  Plotly.newPlot("chart-volume", traces, {
+    ...layoutDefaults,
+    barmode: "stack",
+    showlegend: true,
+    legend: { orientation: "h", y: -0.25, font: { size: 11 } },
+    margin: { l: 60, r: 16, t: 10, b: 60 },
+    yaxis: { ...layoutDefaults.yaxis, title: "lbs (weight × reps)" },
+  }, plotlyConfig);
+}
+
+// Per-exercise breakdown: one section per muscle group, one mini-chart per exercise.
+// Each mini-chart overlays per-session weight (line, primary axis) and per-session
+// volume (bars, secondary axis). Exercises are ordered by session count (desc) so
+// the ones trained most often appear first.
+function renderPerExerciseBreakdown(records) {
+  const container = document.getElementById("per-exercise-sections");
+  if (!container) return;
+  container.innerHTML = ""; // reset
+
+  // records → group → exercise → points[]
+  const byGroup = new Map();
+  for (const g of MUSCLE_GROUPS) byGroup.set(g, new Map());
+  for (const r of records) {
+    const gMap = byGroup.get(r.group);
+    if (!gMap) continue;
+    if (!gMap.has(r.exercise)) gMap.set(r.exercise, []);
+    gMap.get(r.exercise).push(r);
+  }
+
+  for (const group of MUSCLE_GROUPS) {
+    const gMap = byGroup.get(group);
+    if (!gMap || gMap.size === 0) continue;
+
+    // Sort exercises by session count, descending
+    const exercises = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
+    const color = GROUP_COLORS[group];
+    const pretty = group[0] + group.slice(1).toLowerCase();
+
+    // Card per muscle group, containing a responsive grid of mini-charts
+    const section = document.createElement("div");
+    section.className = "card span-12";
+    section.innerHTML = `
+      <div class="group-title">
+        <span class="legend-swatch" style="background:${color}"></span>
+        <h2 style="color:${color}">${pretty}</h2>
+        <span class="count">${exercises.length} exercises</span>
       </div>
-      <div style="flex: 1;">${sparklineSvg(points, cumMax, color)}</div>
-      <div style="font-size: 10px; color: var(--muted); display: flex; justify-content: space-between;">
-        <span>${points.length} sessions</span>
-        <span>${points.filter((p, i) => i === 0 || cumMax[i] > cumMax[i - 1]).length} PRs</span>
-      </div>
+      <div class="exercise-grid"></div>
     `;
-    container.appendChild(card);
+    // IMPORTANT: attach section to the document BEFORE calling Plotly.newPlot,
+    // otherwise Plotly throws "No DOM element with id ... exists on the page".
+    container.appendChild(section);
+    const grid = section.querySelector(".exercise-grid");
+
+    exercises.forEach(([name, pts], idx) => {
+      // Sort points by date within the exercise
+      const points = [...pts].sort((a, b) => a.date - b.date);
+      const safeId = `ex-${group}-${idx}`;
+
+      const exCard = document.createElement("div");
+      exCard.className = "exercise-card";
+      exCard.innerHTML = `
+        <div class="exercise-card-header">
+          <span class="exercise-card-title">${name}</span>
+          <span class="exercise-card-sub">${points.length} sessions</span>
+        </div>
+        <div id="${safeId}" class="exercise-mini-chart"></div>
+      `;
+      grid.appendChild(exCard);
+
+      const xs = points.map(p => toISODate(p.date));
+      const weights = points.map(p => p.weight);
+      const volumes = points.map(p => p.volume);
+      // Flag cells that used the 3×10 default so the user can tell real data apart
+      const repsLabels = points.map(p =>
+        p.reps ? (p.repsAssumed ? `${p.reps.join(", ")} (assumed)` : p.reps.join(", ")) : ""
+      );
+
+      const traces = [
+        {
+          type: "bar",
+          x: xs,
+          y: volumes,
+          name: "Volume",
+          marker: { color: color, opacity: 0.28 },
+          yaxis: "y2",
+          hovertemplate:
+            `%{x}<br>Volume: %{y} lbs` +
+            `<extra></extra>`,
+        },
+        {
+          type: "scatter",
+          mode: "lines+markers",
+          x: xs,
+          y: weights,
+          name: "Weight",
+          line: { color: color, width: 2 },
+          marker: { size: 4, color: color },
+          customdata: repsLabels,
+          hovertemplate:
+            `%{x}<br>Weight: %{y} lbs` +
+            `%{customdata| <br>Reps: %{customdata}}` +
+            `<extra></extra>`,
+        },
+      ];
+
+      Plotly.newPlot(safeId, traces, {
+        ...layoutDefaults,
+        showlegend: false,
+        margin: { l: 40, r: 40, t: 8, b: 30 },
+        bargap: 0.2,
+        xaxis: {
+          ...layoutDefaults.xaxis,
+          nticks: 4,
+          tickfont: { size: 10 },
+        },
+        yaxis: {
+          ...layoutDefaults.yaxis,
+          title: { text: "lbs", font: { size: 10, color: "#8a93a6" } },
+          tickfont: { size: 10 },
+          rangemode: "tozero",
+        },
+        yaxis2: {
+          overlaying: "y",
+          side: "right",
+          showgrid: false,
+          zeroline: false,
+          tickfont: { size: 10, color: "#8a93a6" },
+          title: { text: "vol", font: { size: 10, color: "#8a93a6" } },
+          rangemode: "tozero",
+        },
+      }, plotlyConfig);
+    });
   }
 }
 
