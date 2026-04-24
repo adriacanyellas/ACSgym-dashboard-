@@ -216,6 +216,10 @@ function buildLongFormat(rows) {
     //       "Calisthenics", "PT Legs") — handles days logged as just a label + date.
     if (exs.length > 0 || hasLabel) {
       sessions.push({ date, sessionType, exercises: exs, colIdx: c });
+    } else {
+      // Diagnostic: log columns with a valid date that we decided NOT to count as a session,
+      // so issues like "calisthenics day not counted" can be debugged from the browser console.
+      console.warn(`[session skipped] col ${c} date=${toISODate(date)} type=${JSON.stringify(sessionType)} reason=no-exercises-and-no-label`);
     }
   }
 
@@ -343,19 +347,6 @@ function renderDashboard(data) {
     </div>
 
     <div class="card span-12">
-      <h2>Gym calendar</h2>
-      <div id="chart-calendar" class="chart"></div>
-      <div class="heatmap-legend">
-        Less
-        <span class="heatmap-cell-sample" style="background:#1a2030"></span>
-        <span class="heatmap-cell-sample" style="background:#2d4a3e"></span>
-        <span class="heatmap-cell-sample" style="background:#3fa66b"></span>
-        <span class="heatmap-cell-sample" style="background:#4ade80"></span>
-        More
-      </div>
-    </div>
-
-    <div class="card span-12">
       <h2>Max weight progression</h2>
       <div class="row" style="margin-bottom: 10px">
         <label for="filter-group">Muscle group</label>
@@ -372,6 +363,19 @@ function renderDashboard(data) {
         </select>
       </div>
       <div id="chart-progression" class="chart chart-tall"></div>
+    </div>
+
+    <div class="card span-12">
+      <h2>Gym calendar</h2>
+      <div id="chart-calendar" class="chart"></div>
+      <div class="heatmap-legend">
+        Less
+        <span class="heatmap-cell-sample" style="background:#1a2030"></span>
+        <span class="heatmap-cell-sample" style="background:#2d4a3e"></span>
+        <span class="heatmap-cell-sample" style="background:#3fa66b"></span>
+        <span class="heatmap-cell-sample" style="background:#4ade80"></span>
+        More
+      </div>
     </div>
   `;
 
@@ -417,20 +421,29 @@ function renderDashboard(data) {
   document.getElementById("data-status").textContent =
     `${total} sessions · ${records.length} exercise entries · auto-refreshed on page load`;
 
-  // --- Weekly frequency chart ---
-  renderWeekly(sessions);
-  // --- Muscle group distribution (last 90 days) ---
-  renderGroups(sessions);
-  // --- Calendar heatmap ---
-  renderCalendar(sessions);
-  // --- Progression ---
-  const progression = progressionByExercise(records);
-  const groupSel = document.getElementById("filter-group");
-  const minSel = document.getElementById("filter-min");
-  const redraw = () => renderProgression(progression, groupSel.value, parseInt(minSel.value, 10));
-  groupSel.addEventListener("change", redraw);
-  minSel.addEventListener("change", redraw);
-  redraw();
+  // Defensive: wrap each chart so one failure doesn't prevent the others (esp. progression)
+  // from rendering. Errors are logged to the browser console for debugging.
+  const safe = (name, fn) => {
+    try { fn(); } catch (err) { console.error(`[chart render failed: ${name}]`, err); }
+  };
+
+  safe("weekly", () => renderWeekly(sessions));
+  safe("groups", () => renderGroups(sessions));
+  safe("calendar", () => renderCalendar(sessions));
+
+  // --- Progression (individual exercise PR plots) ---
+  safe("progression-setup", () => {
+    const progression = progressionByExercise(records);
+    const groupSel = document.getElementById("filter-group");
+    const minSel = document.getElementById("filter-min");
+    const redraw = () => {
+      try { renderProgression(progression, groupSel.value, parseInt(minSel.value, 10)); }
+      catch (err) { console.error("[progression redraw failed]", err); }
+    };
+    groupSel.addEventListener("change", redraw);
+    minSel.addEventListener("change", redraw);
+    redraw();
+  });
 }
 
 function renderWeekly(sessions) {
@@ -571,20 +584,24 @@ function renderProgression(progMap, groupFilter, minPoints) {
     });
   }
 
-  // Responsive layout: legend goes below on narrow screens (mobile) to avoid
-  // eating chart width; stays on the right on wider screens.
-  const isNarrow = window.innerWidth < 720;
+  // Responsive layout: legend goes below on narrow screens (mobile), right on wide.
+  const isNarrow = (typeof window !== "undefined") && window.innerWidth < 720;
   Plotly.newPlot("chart-progression", traces, {
     ...layoutDefaults,
     showlegend: true,
     legend: isNarrow
-      ? { orientation: "h", x: 0, y: -0.2, font: { size: 10 } }
+      ? { orientation: "h", x: 0, y: -0.25, font: { size: 10 } }
       : { orientation: "v", x: 1.02, y: 1, font: { size: 11 } },
     margin: isNarrow
-      ? { l: 44, r: 16, t: 10, b: 100 }
+      ? { l: 44, r: 16, t: 10, b: 120 }
       : { l: 50, r: 180, t: 10, b: 40 },
-    xaxis: { ...layoutDefaults.xaxis, type: "date" },
     yaxis: { ...layoutDefaults.yaxis, title: "kg" },
+    // If no traces match, show a helpful annotation so the card doesn't look blank.
+    annotations: traces.length === 0 ? [{
+      text: "No exercises match the current filters.<br>Try lowering min data points or selecting a different group.",
+      xref: "paper", yref: "paper", x: 0.5, y: 0.5,
+      showarrow: false, font: { color: "#8a93a6", size: 13 },
+    }] : [],
   }, plotlyConfig);
 }
 
