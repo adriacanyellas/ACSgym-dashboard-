@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ACS Body Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel2: #1c2230;
+    --border: #252c3a;
+    --text: #e6e8ee;
+    --muted: #8a93a6;
+    --accent: #7c9cff;
+    --good: #4ade80;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --fat: #f59e0b;
+    --lean: #4ade80;
+    --bone: #7c9cff;
+  }
+  * { box-sizing: border-box }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", sans-serif;
+  }
+  header {
+    padding: 22px 28px 10px;
+    display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px;
+  }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600 }
+  header .sub { color: var(--muted); font-size: 13px }
+  header nav a {
+    color: var(--muted); text-decoration: none; font-size: 13px; margin-right: 14px;
+    border-bottom: 1px solid transparent; padding-bottom: 2px;
+  }
+  header nav a:hover { color: var(--text); border-bottom-color: var(--accent) }
+  header nav a.active { color: var(--text); border-bottom-color: var(--accent) }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 16px;
+    padding: 12px 24px 40px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    min-height: 0;
+  }
+  .card h2 {
+    margin: 0 0 10px 0; font-size: 13px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .span-3 { grid-column: span 3 }
+  .span-4 { grid-column: span 4 }
+  .span-6 { grid-column: span 6 }
+  .span-8 { grid-column: span 8 }
+  .span-12 { grid-column: span 12 }
+  @media (max-width: 960px) {
+    .span-3, .span-4, .span-6, .span-8 { grid-column: span 12 }
+  }
+  .stat { font-size: 34px; font-weight: 700; line-height: 1 }
+  .stat .unit { font-size: 13px; color: var(--muted); font-weight: 500; margin-left: 6px }
+  .stat-sub { color: var(--muted); font-size: 12px; margin-top: 6px }
+  .stat-sub .up { color: var(--bad) }
+  .stat-sub .down { color: var(--good) }
+  .stat-sub .flat { color: var(--muted) }
+  .chart { width: 100%; height: 300px }
+  .chart-tall { height: 360px }
+  .chart-short { height: 200px }
+  .loading, .error {
+    padding: 32px; text-align: center; color: var(--muted);
+  }
+  .error { color: var(--bad) }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: var(--panel2); color: var(--muted);
+    font-size: 11px; border: 1px solid var(--border);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px }
+  table th, table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border) }
+  table th { color: var(--muted); font-weight: 500; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .05em }
+  table td.num { text-align: right; font-variant-numeric: tabular-nums }
+  table th.num { text-align: right }
+  .change-pos { color: var(--good) }
+  .change-neg { color: var(--bad) }
+  .change-flat { color: var(--muted) }
+  .legend { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap }
+  .legend-item { display: flex; align-items: center; gap: 4px }
+  .legend-swatch {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  }
+  .note { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline }
+  .row > div { flex: 1; min-width: 140px }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ACS Body Dashboard</h1>
+    <div class="sub" id="data-status">Loading data…</div>
+  </div>
+  <nav>
+    <a href="index.html">Gym</a>
+    <a href="body.html" class="active">Body</a>
+  </nav>
+  <div class="pill" id="data-range"></div>
+</header>
+
+<div id="content" class="loading">Fetching weight log…</div>
+
+<script>
+// ============================================================
+// Config
+// ============================================================
+// Weight tab CSV (publish-to-web). If this URL 404s, ensure the sheet's
+// publish-to-web setting is "Entire document" (not just sheet 1).
+const WEIGHT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZcwe6JZcbhyEe_QjWziIp6hfssOgZZAaWeLGXAQ5y9Q43PsyVD5Cdv6T85SAi1IDlqdRtJiWFb2ok/pub?gid=1881423293&single=true&output=csv";
+
+// Hardcoded DEXA scans. Add new scans here by appending a record.
+// All weight values stored in kg (lbs / 2.20462). Regional values kept in lbs
+// because DEXA reports them in lbs and the relative comparisons matter more
+// than units; the UI displays kg for top-line numbers.
+const LBS_PER_KG = 2.20462;
+const lb2kg = (lbs) => lbs / LBS_PER_KG;
+
+const DEXA_SCANS = [
+  {
+    date: "2026-03-19",
+    totalLbs: 157.8, fatLbs: 37.0, leanLbs: 114.0, bmcLbs: 6.7,
+    bodyFatPct: 23.5,
+    vatLbs: 1.47,
+    rmrKcal: 1492,
+    androidFatPct: 26.8, gynoidFatPct: 26.9, agRatio: 1.00,
+    boneZScore: 1.7,
+    regions: {
+      Arms:  { fatPct: 16.6, totalLbs: 21.8, fatLbs: 3.6,  leanLbs: 17.2, bmcLbs: 1.0 },
+      Legs:  { fatPct: 24.6, totalLbs: 57.1, fatLbs: 14.0, leanLbs: 40.4, bmcLbs: 2.7 },
+      Trunk: { fatPct: 25.5, totalLbs: 68.1, fatLbs: 17.4, leanLbs: 49.0, bmcLbs: 1.7 },
+    },
+    sides: {
+      "Right arm": { leanLbs: 8.7, fatLbs: 1.8, fatPct: 16.5, totalLbs: 11.0 },
+      "Left arm":  { leanLbs: 8.5, fatLbs: 1.8, fatPct: 16.8, totalLbs: 10.8 },
+      "Right leg": { leanLbs: 20.4, fatLbs: 7.1, fatPct: 24.7, totalLbs: 28.9 },
+      "Left leg":  { leanLbs: 19.9, fatLbs: 6.9, fatPct: 24.4, totalLbs: 28.2 },
+    },
+  },
+  {
+    date: "2026-03-22",
+    totalLbs: 156.4, fatLbs: 35.3, leanLbs: 114.3, bmcLbs: 6.7,
+    bodyFatPct: 22.6,
+    vatLbs: 1.63,
+    rmrKcal: 1495,
+    androidFatPct: 26.6, gynoidFatPct: 24.3, agRatio: 1.10,
+    boneZScore: 1.7,
+    regions: {
+      Arms:  { fatPct: 15.5, totalLbs: 21.4, fatLbs: 3.3,  leanLbs: 17.1, bmcLbs: 1.0 },
+      Legs:  { fatPct: 23.5, totalLbs: 55.8, fatLbs: 13.1, leanLbs: 40.0, bmcLbs: 2.7 },
+      Trunk: { fatPct: 24.6, totalLbs: 68.9, fatLbs: 17.0, leanLbs: 50.2, bmcLbs: 1.7 },
+    },
+    sides: {
+      "Right arm": { leanLbs: 8.7, fatLbs: 1.7, fatPct: 15.3, totalLbs: 10.9 },
+      "Left arm":  { leanLbs: 8.4, fatLbs: 1.6, fatPct: 15.6, totalLbs: 10.5 },
+      "Right leg": { leanLbs: 19.9, fatLbs: 6.6, fatPct: 23.7, totalLbs: 27.8 },
+      "Left leg":  { leanLbs: 20.1, fatLbs: 6.6, fatPct: 23.4, totalLbs: 28.0 },
+    },
+  },
+];
+
+// ============================================================
+// Helpers
+// ============================================================
+
+// Parse YY/MM/DD (sheet format) or ISO YYYY-MM-DD; returns Date in UTC or null.
+function parseDate(s) {
+  if (!s) return null;
+  const str = String(s).trim();
+  // ISO format
+  let m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    return isNaN(d) ? null : d;
+  }
+  // YY/MM/DD
+  m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{1,2})$/);
+  if (m) {
+    const yy = +m[1], mm = +m[2], dd = +m[3];
+    if (yy <= 99 && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+      const d = new Date(Date.UTC(2000 + yy, mm - 1, dd));
+      return isNaN(d) ? null : d;
+    }
+  }
+  return null;
+}
+
+function toISODate(d) { return d.toISOString().slice(0, 10); }
+function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
+function fmt(n, dp = 1) { return n == null || isNaN(n) ? "–" : n.toFixed(dp) }
+
+// Centered rolling mean. Returns array of same length as input; null where
+// insufficient surrounding data.
+function rollingMean(xs, window) {
+  const half = Math.floor(window / 2);
+  const out = new Array(xs.length).fill(null);
+  for (let i = 0; i < xs.length; i++) {
+    let sum = 0, n = 0;
+    for (let j = Math.max(0, i - half); j <= Math.min(xs.length - 1, i + half); j++) {
+      if (xs[j] != null) { sum += xs[j]; n++; }
+    }
+    if (n >= Math.ceil(window / 3)) out[i] = sum / n;
+  }
+  return out;
+}
+
+// Linear regression slope (kg per day) over the last `days` days of weight data.
+function recentTrendKgPerDay(weights, days) {
+  const cutoff = new Date(); cutoff.setUTCDate(cutoff.getUTCDate() - days);
+  const recent = weights.filter(w => w.date >= cutoff);
+  if (recent.length < 5) return null;
+  const t0 = recent[0].date.getTime();
+  const xs = recent.map(w => (w.date.getTime() - t0) / 86400000);
+  const ys = recent.map(w => w.kg);
+  const n = xs.length;
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - meanX) * (ys[i] - meanY);
+    den += (xs[i] - meanX) ** 2;
+  }
+  return den === 0 ? null : num / den; // kg per day
+}
+
+// ============================================================
+// Weight CSV parsing
+// ============================================================
+function parseWeightCSV(rows) {
+  // Find header row containing "Date" and "Weight"
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const r = (rows[i] || []).map(c => String(c || "").trim().toLowerCase());
+    if (r.some(c => c === "date") && r.some(c => c.startsWith("weight"))) {
+      headerIdx = i; break;
+    }
+  }
+  if (headerIdx < 0) return [];
+
+  const header = rows[headerIdx].map(c => String(c || "").trim().toLowerCase());
+  const dateCol = header.findIndex(c => c === "date");
+  const weightCol = header.findIndex(c => c.startsWith("weight"));
+
+  const records = [];
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const dStr = (r[dateCol] || "").trim();
+    const wStr = (r[weightCol] || "").trim();
+    if (!dStr || !wStr) continue;
+    const date = parseDate(dStr);
+    const kg = parseFloat(wStr);
+    if (!date || isNaN(kg)) continue;
+    // Outlier filter: assume sensible adult weight range
+    if (kg < 50 || kg > 110) continue;
+    records.push({ date, kg });
+  }
+  // Sort ascending by date
+  records.sort((a, b) => a.date - b.date);
+
+  // Collapse same-day duplicates by averaging
+  const byDay = new Map();
+  for (const r of records) {
+    const k = toISODate(r.date);
+    if (!byDay.has(k)) byDay.set(k, []);
+    byDay.get(k).push(r.kg);
+  }
+  const collapsed = [];
+  for (const [k, vals] of byDay) {
+    collapsed.push({ date: new Date(k + "T00:00:00Z"),
+                      kg: vals.reduce((a, b) => a + b, 0) / vals.length });
+  }
+  collapsed.sort((a, b) => a.date - b.date);
+  return collapsed;
+}
+
+// Build a daily series from earliest weigh-in to today, with null for missing.
+function fillDailySeries(weights) {
+  if (weights.length === 0) return [];
+  const start = new Date(weights[0].date);
+  const end = new Date(); end.setUTCHours(0, 0, 0, 0);
+  const lookup = new Map(weights.map(w => [toISODate(w.date), w.kg]));
+  const out = [];
+  for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 86400000)) {
+    const k = toISODate(d);
+    out.push({ date: new Date(d), iso: k, kg: lookup.has(k) ? lookup.get(k) : null });
+  }
+  return out;
+}
+
+// ============================================================
+// Rendering
+// ============================================================
+
+const layoutDefaults = {
+  paper_bgcolor: "rgba(0,0,0,0)",
+  plot_bgcolor: "rgba(0,0,0,0)",
+  font: { family: "inherit", color: "#e6e8ee", size: 12 },
+  margin: { l: 48, r: 20, t: 10, b: 40 },
+  xaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
+  yaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
+  hoverlabel: { bgcolor: "#1c2230", bordercolor: "#252c3a" },
+};
+const plotlyConfig = { responsive: true, displayModeBar: false };
+
+function renderDashboard(weights) {
+  const content = document.getElementById("content");
+  content.className = "";
+  content.classList.add("grid");
+
+  const hasWeight = weights.length > 0;
+  const latest = hasWeight ? weights[weights.length - 1] : null;
+  const firstDate = hasWeight ? weights[0].date : null;
+
+  const dailySeries = fillDailySeries(weights);
+  const ys = dailySeries.map(d => d.kg);
+  const ma7 = rollingMean(ys, 7);
+  const ma30 = rollingMean(ys, 30);
+
+  // 7-day current avg vs previous 7-day
+  const last7 = ma7[ma7.length - 1];
+  // previous-week 7-day MA: 7 days ago
+  const prevIdx = ma7.length - 1 - 7;
+  const prev7 = prevIdx >= 0 ? ma7[prevIdx] : null;
+  const wkDelta = (last7 != null && prev7 != null) ? last7 - prev7 : null;
+
+  // 30-day trend (kg/wk via linear regression)
+  const trendKgPerDay = recentTrendKgPerDay(weights, 30);
+  const trendKgPerWeek = trendKgPerDay != null ? trendKgPerDay * 7 : null;
+
+  // Days since last DEXA
+  const lastDexa = DEXA_SCANS[DEXA_SCANS.length - 1];
+  const lastDexaDate = parseDate(lastDexa.date);
+  const daysSinceDexa = daysBetween(lastDexaDate, new Date());
+
+  // ---- Header ----
+  document.getElementById("data-status").textContent =
+    `${weights.length} weigh-ins · ${DEXA_SCANS.length} DEXA scan${DEXA_SCANS.length > 1 ? "s" : ""}`;
+  document.getElementById("data-range").textContent =
+    firstDate
+      ? `${toISODate(firstDate)} → ${toISODate(latest.date)}`
+      : "";
+
+  // ---- Build cards ----
+  content.innerHTML = `
+    <div class="card span-3">
+      <h2>Latest weight</h2>
+      <div class="stat">${hasWeight ? fmt(latest.kg, 2) : "–"}<span class="unit">kg</span></div>
+      <div class="stat-sub">${hasWeight ? toISODate(latest.date) : ""}</div>
+    </div>
+    <div class="card span-3">
+      <h2>7-day average</h2>
+      <div class="stat">${fmt(last7, 2)}<span class="unit">kg</span></div>
+      <div class="stat-sub">${formatDelta(wkDelta, "vs prev wk")}</div>
+    </div>
+    <div class="card span-3">
+      <h2>30-day trend</h2>
+      <div class="stat">${trendKgPerWeek == null ? "–" : (trendKgPerWeek >= 0 ? "+" : "") + fmt(trendKgPerWeek, 2)}<span class="unit">kg / wk</span></div>
+      <div class="stat-sub">${trendDescription(trendKgPerWeek)}</div>
+    </div>
+    <div class="card span-3">
+      <h2>Last DEXA</h2>
+      <div class="stat">${daysSinceDexa}<span class="unit">days ago</span></div>
+      <div class="stat-sub">${lastDexa.date} · ${fmt(lastDexa.bodyFatPct, 1)}% BF</div>
+    </div>
+
+    <div class="card span-12">
+      <h2>Weight (kg) over time</h2>
+      <div id="chart-weight" class="chart chart-tall"></div>
+      <div class="legend" style="margin-top: 8px">
+        <div class="legend-item"><span class="legend-swatch" style="background:#3a4359"></span> Raw daily</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#7c9cff"></span> 7-day avg</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#4ade80"></span> 30-day avg</div>
+      </div>
+      <div class="note">Daily weight has ±0.5 kg of noise (water, glycogen, food). The 7-day and 30-day averages are the actual signal.</div>
+    </div>
+
+    <div class="card span-3">
+      <h2>Lean mass</h2>
+      <div class="stat">${fmt(lb2kg(lastDexa.leanLbs), 1)}<span class="unit">kg</span></div>
+      <div class="stat-sub">${dexaChange("leanLbs", "kg", "up")}</div>
+    </div>
+    <div class="card span-3">
+      <h2>Fat mass</h2>
+      <div class="stat">${fmt(lb2kg(lastDexa.fatLbs), 1)}<span class="unit">kg</span></div>
+      <div class="stat-sub">${dexaChange("fatLbs", "kg", "down")}</div>
+    </div>
+    <div class="card span-3">
+      <h2>Body fat %</h2>
+      <div class="stat">${fmt(lastDexa.bodyFatPct, 1)}<span class="unit">%</span></div>
+      <div class="stat-sub">${dexaChange("bodyFatPct", "%", "down")} · ${bodyFatBracket(lastDexa.bodyFatPct)}</div>
+    </div>
+    <div class="card span-3">
+      <h2>VAT</h2>
+      <div class="stat">${fmt(lb2kg(lastDexa.vatLbs) * 1000, 0)}<span class="unit">g</span></div>
+      <div class="stat-sub">${dexaChange("vatLbs", "kg", "down")} · ${vatJudgement(lastDexa.vatLbs)}</div>
+    </div>
+
+    <div class="card span-6">
+      <h2>Body composition by scan</h2>
+      <div id="chart-composition" class="chart"></div>
+    </div>
+    <div class="card span-6">
+      <h2>Regional fat & lean (latest scan)</h2>
+      <div id="chart-regional" class="chart"></div>
+    </div>
+
+    <div class="card span-6">
+      <h2>Symmetry check (latest scan)</h2>
+      <table id="symmetry-table"></table>
+      <div class="note" id="symmetry-note"></div>
+    </div>
+    <div class="card span-6">
+      <h2>DEXA scan history</h2>
+      <table id="dexa-table"></table>
+      ${DEXA_SCANS.length === 2 && Math.abs(daysBetween(parseDate(DEXA_SCANS[0].date), parseDate(DEXA_SCANS[1].date))) <= 7
+        ? `<div class="note">⚠ The two scans on file are ${Math.abs(daysBetween(parseDate(DEXA_SCANS[0].date), parseDate(DEXA_SCANS[1].date)))} days apart — the deltas reflect measurement noise (DEXA accuracy ±0.5%) and hydration, not real fat loss. Treat them as a baseline pair.</div>`
+        : ""}
+    </div>
+  `;
+
+  // ---- Charts ----
+  if (hasWeight) renderWeightChart(dailySeries, ma7, ma30);
+  renderComposition();
+  renderRegional();
+  renderSymmetry();
+  renderDexaTable();
+}
+
+function formatDelta(value, suffix) {
+  if (value == null) return "–";
+  const cls = Math.abs(value) < 0.05 ? "flat" : (value > 0 ? "up" : "down");
+  const sign = value > 0 ? "+" : "";
+  return `<span class="${cls}">${sign}${fmt(value, 2)} kg</span> ${suffix}`;
+}
+
+function trendDescription(kgPerWeek) {
+  if (kgPerWeek == null) return "";
+  const abs = Math.abs(kgPerWeek);
+  if (abs < 0.1) return "stable";
+  // ~7700 kcal per kg of body weight (mostly fat) is the textbook estimate.
+  // For weight trend over 30 days at 70 kg, this is a reasonable proxy.
+  const kcalPerDay = (kgPerWeek * 7700) / 7;
+  const sign = kcalPerDay > 0 ? "surplus" : "deficit";
+  return `~${Math.abs(Math.round(kcalPerDay))} kcal/day ${sign}`;
+}
+
+// upIsGood: "up" means an increase is good (lean mass), "down" means decrease is good
+// (fat, BF%, VAT), "neutral" leaves coloring agnostic.
+function dexaChange(field, unitLabel, upIsGood = "neutral") {
+  if (DEXA_SCANS.length < 2) return "first scan";
+  const last = DEXA_SCANS[DEXA_SCANS.length - 1];
+  const prev = DEXA_SCANS[DEXA_SCANS.length - 2];
+  let lastVal = last[field], prevVal = prev[field];
+  if (field.endsWith("Lbs") && unitLabel === "kg") {
+    lastVal = lb2kg(lastVal); prevVal = lb2kg(prevVal);
+  }
+  const delta = lastVal - prevVal;
+  const sign = delta > 0 ? "+" : "";
+  let cls;
+  if (Math.abs(delta) < 0.05) cls = "change-flat";
+  else if (upIsGood === "up") cls = delta > 0 ? "change-pos" : "change-neg";
+  else if (upIsGood === "down") cls = delta < 0 ? "change-pos" : "change-neg";
+  else cls = "change-flat";
+  return `<span class="${cls}">${sign}${fmt(delta, 2)} ${unitLabel}</span> vs prev`;
+}
+
+function bodyFatBracket(bf) {
+  // Men 30-39 BodySpec brackets
+  if (bf < 18) return "top 20%";
+  if (bf < 22) return "top 40%";
+  if (bf < 26) return "average";
+  if (bf < 30) return "below avg";
+  return "bottom 20%";
+}
+
+function vatJudgement(lbs) {
+  if (lbs < 1.0) return "very low";
+  if (lbs < 2.0) return "low (good)";
+  if (lbs < 3.0) return "moderate";
+  return "elevated";
+}
+
+function renderWeightChart(daily, ma7, ma30) {
+  const xs = daily.map(d => d.iso);
+  const raw = daily.map(d => d.kg);
+
+  // Y-axis range based on data
+  const finite = raw.filter(v => v != null);
+  const lo = Math.floor(Math.min(...finite) - 1);
+  const hi = Math.ceil(Math.max(...finite) + 1);
+
+  const traces = [
+    {
+      type: "scatter", mode: "markers", name: "Daily",
+      x: xs, y: raw,
+      marker: { size: 4, color: "#3a4359", opacity: 0.7 },
+      hovertemplate: "%{x}<br>%{y:.2f} kg<extra></extra>",
+      connectgaps: false,
+    },
+    {
+      type: "scatter", mode: "lines", name: "7-day avg",
+      x: xs, y: ma7,
+      line: { color: "#7c9cff", width: 2 },
+      hovertemplate: "%{x}<br>7-day: %{y:.2f} kg<extra></extra>",
+      connectgaps: true,
+    },
+    {
+      type: "scatter", mode: "lines", name: "30-day avg",
+      x: xs, y: ma30,
+      line: { color: "#4ade80", width: 2.5 },
+      hovertemplate: "%{x}<br>30-day: %{y:.2f} kg<extra></extra>",
+      connectgaps: true,
+    },
+  ];
+  Plotly.newPlot("chart-weight", traces, {
+    ...layoutDefaults,
+    showlegend: false,
+    margin: { l: 48, r: 16, t: 10, b: 40 },
+    yaxis: { ...layoutDefaults.yaxis, range: [lo, hi], title: "kg" },
+  }, plotlyConfig);
+}
+
+function renderComposition() {
+  const dates = DEXA_SCANS.map(s => s.date);
+  const fat = DEXA_SCANS.map(s => lb2kg(s.fatLbs));
+  const lean = DEXA_SCANS.map(s => lb2kg(s.leanLbs));
+  const bone = DEXA_SCANS.map(s => lb2kg(s.bmcLbs));
+  Plotly.newPlot("chart-composition", [
+    { type: "bar", name: "Fat", x: dates, y: fat,
+      marker: { color: "#f59e0b" },
+      hovertemplate: "Fat %{y:.2f} kg<extra></extra>" },
+    { type: "bar", name: "Lean", x: dates, y: lean,
+      marker: { color: "#4ade80" },
+      hovertemplate: "Lean %{y:.2f} kg<extra></extra>" },
+    { type: "bar", name: "Bone (BMC)", x: dates, y: bone,
+      marker: { color: "#7c9cff" },
+      hovertemplate: "Bone %{y:.2f} kg<extra></extra>" },
+  ], {
+    ...layoutDefaults,
+    barmode: "stack",
+    showlegend: true,
+    legend: { orientation: "h", y: -0.2 },
+    margin: { l: 48, r: 16, t: 10, b: 60 },
+    yaxis: { ...layoutDefaults.yaxis, title: "kg" },
+  }, plotlyConfig);
+}
+
+function renderRegional() {
+  const last = DEXA_SCANS[DEXA_SCANS.length - 1];
+  const regs = ["Arms", "Legs", "Trunk"];
+  const fat = regs.map(r => lb2kg(last.regions[r].fatLbs));
+  const lean = regs.map(r => lb2kg(last.regions[r].leanLbs));
+  Plotly.newPlot("chart-regional", [
+    { type: "bar", orientation: "h", name: "Fat",
+      y: regs, x: fat,
+      marker: { color: "#f59e0b" },
+      hovertemplate: "%{y} fat: %{x:.2f} kg<extra></extra>" },
+    { type: "bar", orientation: "h", name: "Lean",
+      y: regs, x: lean,
+      marker: { color: "#4ade80" },
+      hovertemplate: "%{y} lean: %{x:.2f} kg<extra></extra>" },
+  ], {
+    ...layoutDefaults,
+    barmode: "stack",
+    showlegend: true,
+    legend: { orientation: "h", y: -0.2 },
+    margin: { l: 60, r: 16, t: 10, b: 60 },
+    xaxis: { ...layoutDefaults.xaxis, title: "kg" },
+  }, plotlyConfig);
+}
+
+function renderSymmetry() {
+  const last = DEXA_SCANS[DEXA_SCANS.length - 1];
+  const tbl = document.getElementById("symmetry-table");
+  const pairs = [
+    ["Arms", "Right arm", "Left arm"],
+    ["Legs", "Right leg", "Left leg"],
+  ];
+  let html = `<thead><tr>
+    <th>Limb</th><th class="num">Right (kg lean)</th>
+    <th class="num">Left (kg lean)</th><th class="num">Δ</th></tr></thead><tbody>`;
+  let imbalanceWarn = false;
+  for (const [label, r, l] of pairs) {
+    const rk = lb2kg(last.sides[r].leanLbs);
+    const lk = lb2kg(last.sides[l].leanLbs);
+    const diff = rk - lk;
+    const diffLbs = Math.abs(last.sides[r].leanLbs - last.sides[l].leanLbs);
+    if (diffLbs > 2) imbalanceWarn = true;
+    const cls = Math.abs(diff) < 0.1 ? "change-flat" : (Math.abs(diff) > 0.9 ? "change-neg" : "change-flat");
+    html += `<tr>
+      <td>${label}</td>
+      <td class="num">${fmt(rk, 2)}</td>
+      <td class="num">${fmt(lk, 2)}</td>
+      <td class="num ${cls}">${diff > 0 ? "+" : ""}${fmt(diff, 2)}</td>
+    </tr>`;
+  }
+  html += "</tbody>";
+  tbl.innerHTML = html;
+  document.getElementById("symmetry-note").textContent = imbalanceWarn
+    ? "⚠ Imbalance >2 lbs detected — flag for follow-up."
+    : "All limb deltas under the 2 lb (≈0.9 kg) threshold. Balanced.";
+}
+
+function renderDexaTable() {
+  const tbl = document.getElementById("dexa-table");
+  let html = `<thead><tr>
+    <th>Date</th>
+    <th class="num">Weight</th>
+    <th class="num">Lean</th>
+    <th class="num">Fat</th>
+    <th class="num">BF%</th>
+    <th class="num">VAT</th>
+  </tr></thead><tbody>`;
+  for (let i = DEXA_SCANS.length - 1; i >= 0; i--) {
+    const s = DEXA_SCANS[i];
+    html += `<tr>
+      <td>${s.date}</td>
+      <td class="num">${fmt(lb2kg(s.totalLbs), 1)}</td>
+      <td class="num">${fmt(lb2kg(s.leanLbs), 1)}</td>
+      <td class="num">${fmt(lb2kg(s.fatLbs), 1)}</td>
+      <td class="num">${fmt(s.bodyFatPct, 1)}</td>
+      <td class="num">${fmt(lb2kg(s.vatLbs) * 1000, 0)} g</td>
+    </tr>`;
+  }
+  html += "</tbody>";
+  tbl.innerHTML = html;
+}
+
+// ============================================================
+// Entry point
+// ============================================================
+async function main() {
+  try {
+    const resp = await fetch(WEIGHT_CSV_URL, { cache: "no-store" });
+    let weights = [];
+    if (resp.ok) {
+      const text = await resp.text();
+      const parsed = Papa.parse(text, { skipEmptyLines: true });
+      weights = parseWeightCSV(parsed.data);
+    } else {
+      console.warn("Weight CSV fetch failed:", resp.status);
+    }
+    renderDashboard(weights);
+    if (weights.length === 0) {
+      const status = document.getElementById("data-status");
+      status.textContent = "No weight data — check the publish-to-web setting in the sheet (must be 'Entire document' or include the weight tab).";
+      status.style.color = "var(--warn)";
+    }
+  } catch (err) {
+    const content = document.getElementById("content");
+    content.className = "error";
+    content.textContent = `Could not load: ${err.message}`;
+    console.error(err);
+  }
+}
+
+main();
+</script>
+</body>
+</html>
