@@ -98,6 +98,47 @@
   .note { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px }
   .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline }
   .row > div { flex: 1; min-width: 140px }
+
+  /* Comparison bars (where you stand) */
+  .compare-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 100px;
+    align-items: center;
+    gap: 12px;
+    margin: 18px 0;
+    font-size: 12px;
+  }
+  .compare-label { color: var(--muted); font-weight: 500 }
+  .compare-label small { display: block; color: var(--muted); opacity: 0.7; font-size: 10px;
+    text-transform: uppercase; letter-spacing: .04em; margin-top: 2px }
+  .compare-value { color: var(--text); font-weight: 600; text-align: right;
+    font-variant-numeric: tabular-nums; font-size: 14px }
+  .compare-value small { display: block; color: var(--muted); font-size: 10px; font-weight: 500 }
+  .compare-track {
+    position: relative; height: 26px; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 5px;
+  }
+  .compare-seg {
+    position: absolute; top: 0; bottom: 0; border-right: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: var(--muted); padding: 0 2px; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis;
+  }
+  .compare-seg:last-child { border-right: none }
+  .compare-marker {
+    position: absolute; top: -4px; bottom: -4px; width: 3px;
+    background: var(--accent); border-radius: 2px; z-index: 2;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+  }
+  .compare-marker::after {
+    content: ''; position: absolute; top: -6px; left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent; border-bottom-color: var(--accent);
+  }
+  @media (max-width: 600px) {
+    .compare-row { grid-template-columns: 90px 1fr 80px; gap: 8px }
+    .compare-seg { font-size: 8px }
+  }
 </style>
 </head>
 <body>
@@ -119,17 +160,17 @@
 // ============================================================
 // Config
 // ============================================================
-// Weight tab CSV (publish-to-web). If this URL 404s, ensure the sheet's
-// publish-to-web setting is "Entire document" (not just sheet 1).
 const WEIGHT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZcwe6JZcbhyEe_QjWziIp6hfssOgZZAaWeLGXAQ5y9Q43PsyVD5Cdv6T85SAi1IDlqdRtJiWFb2ok/pub?gid=1881423293&single=true&output=csv";
 
-// Hardcoded DEXA scans. Add new scans here by appending a record.
-// All weight values stored in kg (lbs / 2.20462). Regional values kept in lbs
-// because DEXA reports them in lbs and the relative comparisons matter more
-// than units; the UI displays kg for top-line numbers.
+// Personal constants (from DEXA reports)
+const HEIGHT_CM = 175.3;             // 5'9" — adjust if it ever changes
+const HEIGHT_M = HEIGHT_CM / 100;
+const HEIGHT_M2 = HEIGHT_M * HEIGHT_M;
+
 const LBS_PER_KG = 2.20462;
 const lb2kg = (lbs) => lbs / LBS_PER_KG;
 
+// Hardcoded DEXA scans. Add new scans by appending a record.
 const DEXA_SCANS = [
   {
     date: "2026-03-19",
@@ -174,20 +215,118 @@ const DEXA_SCANS = [
 ];
 
 // ============================================================
+// Body composition index calculations
+// ============================================================
+function ffm(scan)            { return lb2kg(scan.leanLbs) + lb2kg(scan.bmcLbs); }
+function ffmi(scan)           { return ffm(scan) / HEIGHT_M2; }
+// Kouri normalization: adjusts to 1.80 m reference so short/tall are comparable
+function ffmiNormalized(scan) { return ffmi(scan) + 6.1 * (1.8 - HEIGHT_M); }
+
+function appendicularLeanKg(scan) {
+  const s = scan.sides;
+  return lb2kg(
+    s["Right arm"].leanLbs + s["Left arm"].leanLbs +
+    s["Right leg"].leanLbs + s["Left leg"].leanLbs
+  );
+}
+function almi(scan)  { return appendicularLeanKg(scan) / HEIGHT_M2; }
+function vatKg(scan) { return lb2kg(scan.vatLbs); }
+
+// ============================================================
+// Reference brackets (men). Sources: Kouri 1995 (FFMI),
+// EWGSOP2 2019 (ALMI), BodySpec 30-39 (BF%), DEXA literature (A/G, VAT, Z).
+// ============================================================
+const BRACKETS = {
+  ffmiNormalized: {
+    unit: "kg/m²",
+    domain: [16, 25],
+    segments: [
+      { max: 18,   label: "untrained" },
+      { max: 19.5, label: "novice" },
+      { max: 21,   label: "intermediate" },
+      { max: 22.5, label: "advanced" },
+      { max: 24,   label: "elite natural" },
+      { max: 25,   label: "ceiling" },
+    ],
+  },
+  almi: {
+    unit: "kg/m²",
+    domain: [6, 11],
+    segments: [
+      { max: 7,  label: "sarcopenia" },
+      { max: 8,  label: "low" },
+      { max: 9,  label: "average" },
+      { max: 10, label: "above avg" },
+      { max: 11, label: "athletic" },
+    ],
+  },
+  bodyFatPct: {
+    unit: "%",
+    domain: [5, 35],
+    segments: [
+      { max: 11, label: "essential" },
+      { max: 14, label: "athletic" },
+      { max: 17, label: "fit" },
+      { max: 22, label: "fitness" },
+      { max: 26, label: "average" },
+      { max: 30, label: "above avg" },
+      { max: 35, label: "obese" },
+    ],
+  },
+  vatKg: {
+    unit: "kg",
+    domain: [0, 3],
+    segments: [
+      { max: 0.5, label: "very low" },
+      { max: 1.0, label: "low" },
+      { max: 1.5, label: "average" },
+      { max: 2.0, label: "elevated" },
+      { max: 3.0, label: "high risk" },
+    ],
+  },
+  agRatio: {
+    unit: "",
+    domain: [0.6, 1.4],
+    segments: [
+      { max: 0.8, label: "gynoid" },
+      { max: 1.0, label: "balanced" },
+      { max: 1.2, label: "android" },
+      { max: 1.4, label: "high android" },
+    ],
+  },
+  boneZ: {
+    unit: "",
+    domain: [-3, 3],
+    segments: [
+      { max: -2, label: "osteoporosis" },
+      { max: -1, label: "below avg" },
+      { max:  1, label: "normal" },
+      { max:  2, label: "above avg" },
+      { max:  3, label: "very high" },
+    ],
+  },
+};
+
+function bracketLabel(metricKey, value) {
+  const b = BRACKETS[metricKey];
+  if (!b) return "";
+  for (const seg of b.segments) {
+    if (value <= seg.max) return seg.label;
+  }
+  return b.segments[b.segments.length - 1].label;
+}
+
+// ============================================================
 // Helpers
 // ============================================================
-
-// Parse YY/MM/DD (sheet format) or ISO YYYY-MM-DD; returns Date in UTC or null.
 function parseDate(s) {
   if (!s) return null;
   const str = String(s).trim();
-  // ISO format
   let m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (m) {
     const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
     return isNaN(d) ? null : d;
   }
-  // YY/MM/DD
   m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{1,2})$/);
   if (m) {
     const yy = +m[1], mm = +m[2], dd = +m[3];
@@ -203,8 +342,6 @@ function toISODate(d) { return d.toISOString().slice(0, 10); }
 function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
 function fmt(n, dp = 1) { return n == null || isNaN(n) ? "–" : n.toFixed(dp) }
 
-// Centered rolling mean. Returns array of same length as input; null where
-// insufficient surrounding data.
 function rollingMean(xs, window) {
   const half = Math.floor(window / 2);
   const out = new Array(xs.length).fill(null);
@@ -218,7 +355,6 @@ function rollingMean(xs, window) {
   return out;
 }
 
-// Linear regression slope (kg per day) over the last `days` days of weight data.
 function recentTrendKgPerDay(weights, days) {
   const cutoff = new Date(); cutoff.setUTCDate(cutoff.getUTCDate() - days);
   const recent = weights.filter(w => w.date >= cutoff);
@@ -234,14 +370,13 @@ function recentTrendKgPerDay(weights, days) {
     num += (xs[i] - meanX) * (ys[i] - meanY);
     den += (xs[i] - meanX) ** 2;
   }
-  return den === 0 ? null : num / den; // kg per day
+  return den === 0 ? null : num / den;
 }
 
 // ============================================================
 // Weight CSV parsing
 // ============================================================
 function parseWeightCSV(rows) {
-  // Find header row containing "Date" and "Weight"
   let headerIdx = -1;
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const r = (rows[i] || []).map(c => String(c || "").trim().toLowerCase());
@@ -264,14 +399,11 @@ function parseWeightCSV(rows) {
     const date = parseDate(dStr);
     const kg = parseFloat(wStr);
     if (!date || isNaN(kg)) continue;
-    // Outlier filter: assume sensible adult weight range
     if (kg < 50 || kg > 110) continue;
     records.push({ date, kg });
   }
-  // Sort ascending by date
   records.sort((a, b) => a.date - b.date);
 
-  // Collapse same-day duplicates by averaging
   const byDay = new Map();
   for (const r of records) {
     const k = toISODate(r.date);
@@ -287,7 +419,6 @@ function parseWeightCSV(rows) {
   return collapsed;
 }
 
-// Build a daily series from earliest weigh-in to today, with null for missing.
 function fillDailySeries(weights) {
   if (weights.length === 0) return [];
   const start = new Date(weights[0].date);
@@ -304,7 +435,6 @@ function fillDailySeries(weights) {
 // ============================================================
 // Rendering
 // ============================================================
-
 const layoutDefaults = {
   paper_bgcolor: "rgba(0,0,0,0)",
   plot_bgcolor: "rgba(0,0,0,0)",
@@ -330,31 +460,30 @@ function renderDashboard(weights) {
   const ma7 = rollingMean(ys, 7);
   const ma30 = rollingMean(ys, 30);
 
-  // 7-day current avg vs previous 7-day
   const last7 = ma7[ma7.length - 1];
-  // previous-week 7-day MA: 7 days ago
   const prevIdx = ma7.length - 1 - 7;
   const prev7 = prevIdx >= 0 ? ma7[prevIdx] : null;
   const wkDelta = (last7 != null && prev7 != null) ? last7 - prev7 : null;
 
-  // 30-day trend (kg/wk via linear regression)
   const trendKgPerDay = recentTrendKgPerDay(weights, 30);
   const trendKgPerWeek = trendKgPerDay != null ? trendKgPerDay * 7 : null;
 
-  // Days since last DEXA
   const lastDexa = DEXA_SCANS[DEXA_SCANS.length - 1];
   const lastDexaDate = parseDate(lastDexa.date);
   const daysSinceDexa = daysBetween(lastDexaDate, new Date());
 
+  // Body composition indices (latest scan)
+  const ffmiVal  = ffmi(lastDexa);
+  const ffmiNorm = ffmiNormalized(lastDexa);
+  const almiVal  = almi(lastDexa);
+  const vatVal   = vatKg(lastDexa);
+
   // ---- Header ----
   document.getElementById("data-status").textContent =
-    `${weights.length} weigh-ins · ${DEXA_SCANS.length} DEXA scan${DEXA_SCANS.length > 1 ? "s" : ""}`;
+    `${weights.length} weigh-ins · ${DEXA_SCANS.length} DEXA scan${DEXA_SCANS.length > 1 ? "s" : ""} · height ${HEIGHT_CM} cm`;
   document.getElementById("data-range").textContent =
-    firstDate
-      ? `${toISODate(firstDate)} → ${toISODate(latest.date)}`
-      : "";
+    firstDate ? `${toISODate(firstDate)} → ${toISODate(latest.date)}` : "";
 
-  // ---- Build cards ----
   content.innerHTML = `
     <div class="card span-3">
       <h2>Latest weight</h2>
@@ -401,12 +530,44 @@ function renderDashboard(weights) {
     <div class="card span-3">
       <h2>Body fat %</h2>
       <div class="stat">${fmt(lastDexa.bodyFatPct, 1)}<span class="unit">%</span></div>
-      <div class="stat-sub">${dexaChange("bodyFatPct", "%", "down")} · ${bodyFatBracket(lastDexa.bodyFatPct)}</div>
+      <div class="stat-sub">${dexaChange("bodyFatPct", "%", "down")} · ${bracketLabel("bodyFatPct", lastDexa.bodyFatPct)}</div>
     </div>
     <div class="card span-3">
       <h2>VAT</h2>
-      <div class="stat">${fmt(lb2kg(lastDexa.vatLbs) * 1000, 0)}<span class="unit">g</span></div>
-      <div class="stat-sub">${dexaChange("vatLbs", "kg", "down")} · ${vatJudgement(lastDexa.vatLbs)}</div>
+      <div class="stat">${fmt(vatVal * 1000, 0)}<span class="unit">g</span></div>
+      <div class="stat-sub">${dexaChange("vatLbs", "kg", "down")} · ${bracketLabel("vatKg", vatVal)}</div>
+    </div>
+
+    <div class="card span-3">
+      <h2>FFMI (normalized)</h2>
+      <div class="stat">${fmt(ffmiNorm, 2)}<span class="unit">kg/m²</span></div>
+      <div class="stat-sub">raw ${fmt(ffmiVal, 2)} · ${bracketLabel("ffmiNormalized", ffmiNorm)}</div>
+    </div>
+    <div class="card span-3">
+      <h2>ALMI</h2>
+      <div class="stat">${fmt(almiVal, 2)}<span class="unit">kg/m²</span></div>
+      <div class="stat-sub">${fmt(appendicularLeanKg(lastDexa), 1)} kg limb · ${bracketLabel("almi", almiVal)}</div>
+    </div>
+    <div class="card span-3">
+      <h2>A/G ratio</h2>
+      <div class="stat">${fmt(lastDexa.agRatio, 2)}</div>
+      <div class="stat-sub">${bracketLabel("agRatio", lastDexa.agRatio)} fat distribution</div>
+    </div>
+    <div class="card span-3">
+      <h2>Bone Z-score</h2>
+      <div class="stat">${lastDexa.boneZScore >= 0 ? "+" : ""}${fmt(lastDexa.boneZScore, 1)}</div>
+      <div class="stat-sub">${bracketLabel("boneZ", lastDexa.boneZScore)} vs age peers</div>
+    </div>
+
+    <div class="card span-12">
+      <h2>Where you stand · men reference ranges</h2>
+      <div id="compare-block"></div>
+      <div class="note">
+        <b>FFMI</b> measures muscularity independent of body fat (fat-free mass / height²). Normalized FFMI adjusts to a 1.80 m reference so heights compare fairly.
+        <b>ALMI</b> is limb-only lean mass / height² — used clinically to screen for sarcopenia.
+        <b>A/G ratio</b> compares android (lower abdomen) to gynoid (hips) fat — elevated values mean central fat storage, which carries higher metabolic risk.
+        Brackets are general male reference ranges; individual variation is large.
+      </div>
     </div>
 
     <div class="card span-6">
@@ -432,8 +593,8 @@ function renderDashboard(weights) {
     </div>
   `;
 
-  // ---- Charts ----
   if (hasWeight) renderWeightChart(dailySeries, ma7, ma30);
+  renderCompareBlock(lastDexa);
   renderComposition();
   renderRegional();
   renderSymmetry();
@@ -451,15 +612,11 @@ function trendDescription(kgPerWeek) {
   if (kgPerWeek == null) return "";
   const abs = Math.abs(kgPerWeek);
   if (abs < 0.1) return "stable";
-  // ~7700 kcal per kg of body weight (mostly fat) is the textbook estimate.
-  // For weight trend over 30 days at 70 kg, this is a reasonable proxy.
   const kcalPerDay = (kgPerWeek * 7700) / 7;
   const sign = kcalPerDay > 0 ? "surplus" : "deficit";
   return `~${Math.abs(Math.round(kcalPerDay))} kcal/day ${sign}`;
 }
 
-// upIsGood: "up" means an increase is good (lean mass), "down" means decrease is good
-// (fat, BF%, VAT), "neutral" leaves coloring agnostic.
 function dexaChange(field, unitLabel, upIsGood = "neutral") {
   if (DEXA_SCANS.length < 2) return "first scan";
   const last = DEXA_SCANS[DEXA_SCANS.length - 1];
@@ -478,27 +635,60 @@ function dexaChange(field, unitLabel, upIsGood = "neutral") {
   return `<span class="${cls}">${sign}${fmt(delta, 2)} ${unitLabel}</span> vs prev`;
 }
 
-function bodyFatBracket(bf) {
-  // Men 30-39 BodySpec brackets
-  if (bf < 18) return "top 20%";
-  if (bf < 22) return "top 40%";
-  if (bf < 26) return "average";
-  if (bf < 30) return "below avg";
-  return "bottom 20%";
+// ============================================================
+// Comparison bars: render a stacked-segment bar per metric with a marker
+// ============================================================
+function renderCompareBlock(scan) {
+  const rows = [
+    { key: "ffmiNormalized", label: "FFMI",       sub: "normalized · kg/m²", value: ffmiNormalized(scan), fmtDp: 2 },
+    { key: "almi",           label: "ALMI",       sub: "limb lean · kg/m²",   value: almi(scan),           fmtDp: 2 },
+    { key: "bodyFatPct",     label: "Body fat %", sub: "men 30–39",            value: scan.bodyFatPct,      fmtDp: 1 },
+    { key: "vatKg",          label: "VAT",        sub: "visceral fat · kg",   value: vatKg(scan),          fmtDp: 2 },
+    { key: "agRatio",        label: "A/G ratio",  sub: "fat distribution",     value: scan.agRatio,         fmtDp: 2 },
+    { key: "boneZ",          label: "Bone Z",     sub: "vs age peers",         value: scan.boneZScore,      fmtDp: 1 },
+  ];
+
+  const host = document.getElementById("compare-block");
+  host.innerHTML = rows.map(r => buildCompareRow(r)).join("");
 }
 
-function vatJudgement(lbs) {
-  if (lbs < 1.0) return "very low";
-  if (lbs < 2.0) return "low (good)";
-  if (lbs < 3.0) return "moderate";
-  return "elevated";
+function buildCompareRow({ key, label, sub, value, fmtDp }) {
+  const b = BRACKETS[key];
+  const [lo, hi] = b.domain;
+  const range = hi - lo;
+  const clamp = (v) => Math.max(lo, Math.min(hi, v));
+  const pct = (v) => ((clamp(v) - lo) / range) * 100;
+
+  let segHtml = "";
+  let prev = lo;
+  for (const seg of b.segments) {
+    const left = pct(prev);
+    const right = pct(seg.max);
+    const width = right - left;
+    if (width <= 0) continue;
+    segHtml += `<div class="compare-seg" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%">${seg.label}</div>`;
+    prev = seg.max;
+  }
+
+  const markerPos = pct(value);
+  const inRange = value >= lo && value <= hi;
+  const markerHtml = `<div class="compare-marker" title="${value.toFixed(fmtDp)}" style="left:${markerPos.toFixed(2)}%"></div>`;
+  const sign = (key === "boneZ" && value >= 0) ? "+" : "";
+  const outNote = inRange ? "" : ` <small>(off scale)</small>`;
+
+  return `
+    <div class="compare-row">
+      <div class="compare-label">${label}<small>${sub}</small></div>
+      <div class="compare-track">${segHtml}${markerHtml}</div>
+      <div class="compare-value">${sign}${value.toFixed(fmtDp)}${outNote}<small>${bracketLabel(key, value)}</small></div>
+    </div>
+  `;
 }
 
 function renderWeightChart(daily, ma7, ma30) {
   const xs = daily.map(d => d.iso);
   const raw = daily.map(d => d.kg);
 
-  // Y-axis range based on data
   const finite = raw.filter(v => v != null);
   const lo = Math.floor(Math.min(...finite) - 1);
   const hi = Math.ceil(Math.max(...finite) + 1);
@@ -623,6 +813,7 @@ function renderDexaTable() {
     <th class="num">Lean</th>
     <th class="num">Fat</th>
     <th class="num">BF%</th>
+    <th class="num">FFMI</th>
     <th class="num">VAT</th>
   </tr></thead><tbody>`;
   for (let i = DEXA_SCANS.length - 1; i >= 0; i--) {
@@ -633,6 +824,7 @@ function renderDexaTable() {
       <td class="num">${fmt(lb2kg(s.leanLbs), 1)}</td>
       <td class="num">${fmt(lb2kg(s.fatLbs), 1)}</td>
       <td class="num">${fmt(s.bodyFatPct, 1)}</td>
+      <td class="num">${fmt(ffmiNormalized(s), 2)}</td>
       <td class="num">${fmt(lb2kg(s.vatLbs) * 1000, 0)} g</td>
     </tr>`;
   }
