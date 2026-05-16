@@ -276,11 +276,16 @@ function buildLongFormat(rows) {
     const up = cell.toUpperCase();
     const hasData = dateColIdx.some(c => (row[c] || "").trim() !== "");
     // A row is a section header if:
-    //   (a) it matches a known group name (forgives stray typos on the header row,
-    //       like a "Surf" logged accidentally on the BACK row), OR
-    //   (b) it has no data in any date column (purely structural — picks up new
-    //       groups like CORE / CALISTHENICS without code changes)
-    const isHeader = KNOWN_GROUP_ORDER.includes(up) || !hasData;
+    //   (a) it matches a known group name — forgives stray typos on the header
+    //       row, like a "Surf" cell accidentally logged on the BACK row, OR
+    //   (b) it LOOKS like a header (ALL CAPS, letters only, 3–20 chars) AND has
+    //       no data in any date column. Both conditions are required so a brand-
+    //       new exercise row with no data yet (e.g. "Hanging Leg raises") is NOT
+    //       promoted to a header just because it's empty.
+    const looksLikeHeader = /^[A-Z]{3,20}$/.test(cell);
+    const isHeader =
+      KNOWN_GROUP_ORDER.includes(up) ||
+      (looksLikeHeader && !hasData);
     if (isHeader) {
       currentGroup = up;
       continue;
