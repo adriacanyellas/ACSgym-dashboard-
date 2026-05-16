@@ -21,6 +21,7 @@
     --fat: #f59e0b;
     --lean: #4ade80;
     --bone: #7c9cff;
+    --waist: #c084fc;
   }
   * { box-sizing: border-box }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
@@ -69,6 +70,7 @@
   .stat-sub .up { color: var(--bad) }
   .stat-sub .down { color: var(--good) }
   .stat-sub .flat { color: var(--muted) }
+  .stat.muted { color: var(--muted); font-size: 18px }
   .chart { width: 100%; height: 300px }
   .chart-tall { height: 360px }
   .chart-short { height: 200px }
@@ -163,7 +165,7 @@
 const WEIGHT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZcwe6JZcbhyEe_QjWziIp6hfssOgZZAaWeLGXAQ5y9Q43PsyVD5Cdv6T85SAi1IDlqdRtJiWFb2ok/pub?gid=1881423293&single=true&output=csv";
 
 // Personal constants (from DEXA reports)
-const HEIGHT_CM = 175.3;             // 5'9" — adjust if it ever changes
+const HEIGHT_CM = 175.3;
 const HEIGHT_M = HEIGHT_CM / 100;
 const HEIGHT_M2 = HEIGHT_M * HEIGHT_M;
 
@@ -175,11 +177,8 @@ const DEXA_SCANS = [
   {
     date: "2026-03-19",
     totalLbs: 157.8, fatLbs: 37.0, leanLbs: 114.0, bmcLbs: 6.7,
-    bodyFatPct: 23.5,
-    vatLbs: 1.47,
-    rmrKcal: 1492,
-    androidFatPct: 26.8, gynoidFatPct: 26.9, agRatio: 1.00,
-    boneZScore: 1.7,
+    bodyFatPct: 23.5, vatLbs: 1.47, rmrKcal: 1492,
+    androidFatPct: 26.8, gynoidFatPct: 26.9, agRatio: 1.00, boneZScore: 1.7,
     regions: {
       Arms:  { fatPct: 16.6, totalLbs: 21.8, fatLbs: 3.6,  leanLbs: 17.2, bmcLbs: 1.0 },
       Legs:  { fatPct: 24.6, totalLbs: 57.1, fatLbs: 14.0, leanLbs: 40.4, bmcLbs: 2.7 },
@@ -195,11 +194,8 @@ const DEXA_SCANS = [
   {
     date: "2026-03-22",
     totalLbs: 156.4, fatLbs: 35.3, leanLbs: 114.3, bmcLbs: 6.7,
-    bodyFatPct: 22.6,
-    vatLbs: 1.63,
-    rmrKcal: 1495,
-    androidFatPct: 26.6, gynoidFatPct: 24.3, agRatio: 1.10,
-    boneZScore: 1.7,
+    bodyFatPct: 22.6, vatLbs: 1.63, rmrKcal: 1495,
+    androidFatPct: 26.6, gynoidFatPct: 24.3, agRatio: 1.10, boneZScore: 1.7,
     regions: {
       Arms:  { fatPct: 15.5, totalLbs: 21.4, fatLbs: 3.3,  leanLbs: 17.1, bmcLbs: 1.0 },
       Legs:  { fatPct: 23.5, totalLbs: 55.8, fatLbs: 13.1, leanLbs: 40.0, bmcLbs: 2.7 },
@@ -215,11 +211,10 @@ const DEXA_SCANS = [
 ];
 
 // ============================================================
-// Body composition index calculations
+// Body composition indices
 // ============================================================
 function ffm(scan)            { return lb2kg(scan.leanLbs) + lb2kg(scan.bmcLbs); }
 function ffmi(scan)           { return ffm(scan) / HEIGHT_M2; }
-// Kouri normalization: adjusts to 1.80 m reference so short/tall are comparable
 function ffmiNormalized(scan) { return ffmi(scan) + 6.1 * (1.8 - HEIGHT_M); }
 
 function appendicularLeanKg(scan) {
@@ -232,14 +227,25 @@ function appendicularLeanKg(scan) {
 function almi(scan)  { return appendicularLeanKg(scan) / HEIGHT_M2; }
 function vatKg(scan) { return lb2kg(scan.vatLbs); }
 
+// Waist-to-height ratio (men: <0.5 healthy)
+function whtr(waistCm) { return waistCm / HEIGHT_CM; }
+
+// Waist-to-hip ratio (men: <0.9 healthy)
+function whr(waistCm, hipCm) { return waistCm / hipCm; }
+
+// US Navy body fat formula (men). All circumferences in cm.
+// BF% = 86.010 * log10(waist - neck) - 70.041 * log10(height) + 36.76
+function navyBodyFatPct(waistCm, neckCm) {
+  if (waistCm == null || neckCm == null || waistCm <= neckCm) return null;
+  return 86.010 * Math.log10(waistCm - neckCm) - 70.041 * Math.log10(HEIGHT_CM) + 36.76;
+}
+
 // ============================================================
-// Reference brackets (men). Sources: Kouri 1995 (FFMI),
-// EWGSOP2 2019 (ALMI), BodySpec 30-39 (BF%), DEXA literature (A/G, VAT, Z).
+// Reference brackets (men)
 // ============================================================
 const BRACKETS = {
   ffmiNormalized: {
-    unit: "kg/m²",
-    domain: [16, 25],
+    unit: "kg/m²", domain: [16, 25],
     segments: [
       { max: 18,   label: "untrained" },
       { max: 19.5, label: "novice" },
@@ -250,8 +256,7 @@ const BRACKETS = {
     ],
   },
   almi: {
-    unit: "kg/m²",
-    domain: [6, 11],
+    unit: "kg/m²", domain: [6, 11],
     segments: [
       { max: 7,  label: "sarcopenia" },
       { max: 8,  label: "low" },
@@ -261,8 +266,7 @@ const BRACKETS = {
     ],
   },
   bodyFatPct: {
-    unit: "%",
-    domain: [5, 35],
+    unit: "%", domain: [5, 35],
     segments: [
       { max: 11, label: "essential" },
       { max: 14, label: "athletic" },
@@ -274,8 +278,7 @@ const BRACKETS = {
     ],
   },
   vatKg: {
-    unit: "kg",
-    domain: [0, 3],
+    unit: "kg", domain: [0, 3],
     segments: [
       { max: 0.5, label: "very low" },
       { max: 1.0, label: "low" },
@@ -285,8 +288,7 @@ const BRACKETS = {
     ],
   },
   agRatio: {
-    unit: "",
-    domain: [0.6, 1.4],
+    unit: "", domain: [0.6, 1.4],
     segments: [
       { max: 0.8, label: "gynoid" },
       { max: 1.0, label: "balanced" },
@@ -295,14 +297,31 @@ const BRACKETS = {
     ],
   },
   boneZ: {
-    unit: "",
-    domain: [-3, 3],
+    unit: "", domain: [-3, 3],
     segments: [
       { max: -2, label: "osteoporosis" },
       { max: -1, label: "below avg" },
       { max:  1, label: "normal" },
       { max:  2, label: "above avg" },
       { max:  3, label: "very high" },
+    ],
+  },
+  whtr: {
+    unit: "", domain: [0.35, 0.70],
+    segments: [
+      { max: 0.40, label: "lean" },
+      { max: 0.50, label: "healthy" },
+      { max: 0.60, label: "elevated" },
+      { max: 0.70, label: "high risk" },
+    ],
+  },
+  whr: {
+    unit: "", domain: [0.75, 1.10],
+    segments: [
+      { max: 0.85, label: "low" },
+      { max: 0.90, label: "healthy" },
+      { max: 1.00, label: "increased" },
+      { max: 1.10, label: "high risk" },
     ],
   },
 };
@@ -374,9 +393,10 @@ function recentTrendKgPerDay(weights, days) {
 }
 
 // ============================================================
-// Weight CSV parsing
+// Weight CSV parsing — extracts weight + optional waist/hip/neck/arm/thigh
 // ============================================================
 function parseWeightCSV(rows) {
+  // Find header row
   let headerIdx = -1;
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const r = (rows[i] || []).map(c => String(c || "").trim().toLowerCase());
@@ -387,33 +407,66 @@ function parseWeightCSV(rows) {
   if (headerIdx < 0) return [];
 
   const header = rows[headerIdx].map(c => String(c || "").trim().toLowerCase());
-  const dateCol = header.findIndex(c => c === "date");
-  const weightCol = header.findIndex(c => c.startsWith("weight"));
+  const colOf = (predicate) => header.findIndex(predicate);
+  const idxDate   = colOf(c => c === "date");
+  const idxWeight = colOf(c => c.startsWith("weight"));
+  const idxWaist  = colOf(c => c.startsWith("waist"));
+  const idxHip    = colOf(c => c.startsWith("hip"));
+  const idxNeck   = colOf(c => c.startsWith("neck"));
+  const idxArm    = colOf(c => c.startsWith("arm"));
+  const idxThigh  = colOf(c => c.startsWith("thigh"));
+
+  // Helper: pull a column value as float or null
+  const num = (r, i) => {
+    if (i < 0) return null;
+    const v = (r[i] || "").trim();
+    if (!v) return null;
+    const n = parseFloat(v);
+    return isNaN(n) ? null : n;
+  };
 
   const records = [];
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const r = rows[i] || [];
-    const dStr = (r[dateCol] || "").trim();
-    const wStr = (r[weightCol] || "").trim();
+    const dStr = (r[idxDate] || "").trim();
+    const wStr = (r[idxWeight] || "").trim();
     if (!dStr || !wStr) continue;
     const date = parseDate(dStr);
     const kg = parseFloat(wStr);
     if (!date || isNaN(kg)) continue;
-    if (kg < 50 || kg > 110) continue;
-    records.push({ date, kg });
+    if (kg < 50 || kg > 110) continue;  // outlier filter
+    records.push({
+      date, kg,
+      waistCm: num(r, idxWaist),
+      hipCm:   num(r, idxHip),
+      neckCm:  num(r, idxNeck),
+      armCm:   num(r, idxArm),
+      thighCm: num(r, idxThigh),
+    });
   }
   records.sort((a, b) => a.date - b.date);
 
+  // Collapse same-day duplicates. For weight: average. For circumferences:
+  // first non-null wins (measurements taken once per day, no need to average).
   const byDay = new Map();
   for (const r of records) {
     const k = toISODate(r.date);
     if (!byDay.has(k)) byDay.set(k, []);
-    byDay.get(k).push(r.kg);
+    byDay.get(k).push(r);
   }
   const collapsed = [];
   for (const [k, vals] of byDay) {
-    collapsed.push({ date: new Date(k + "T00:00:00Z"),
-                      kg: vals.reduce((a, b) => a + b, 0) / vals.length });
+    const kg = vals.reduce((s, v) => s + v.kg, 0) / vals.length;
+    const pickFirst = (key) => vals.find(v => v[key] != null)?.[key] ?? null;
+    collapsed.push({
+      date: new Date(k + "T00:00:00Z"),
+      kg,
+      waistCm: pickFirst("waistCm"),
+      hipCm:   pickFirst("hipCm"),
+      neckCm:  pickFirst("neckCm"),
+      armCm:   pickFirst("armCm"),
+      thighCm: pickFirst("thighCm"),
+    });
   }
   collapsed.sort((a, b) => a.date - b.date);
   return collapsed;
@@ -423,11 +476,16 @@ function fillDailySeries(weights) {
   if (weights.length === 0) return [];
   const start = new Date(weights[0].date);
   const end = new Date(); end.setUTCHours(0, 0, 0, 0);
-  const lookup = new Map(weights.map(w => [toISODate(w.date), w.kg]));
+  const lookup = new Map(weights.map(w => [toISODate(w.date), w]));
   const out = [];
   for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 86400000)) {
     const k = toISODate(d);
-    out.push({ date: new Date(d), iso: k, kg: lookup.has(k) ? lookup.get(k) : null });
+    const rec = lookup.get(k);
+    out.push({
+      date: new Date(d), iso: k,
+      kg: rec ? rec.kg : null,
+      waistCm: rec ? rec.waistCm : null,
+    });
   }
   return out;
 }
@@ -478,11 +536,90 @@ function renderDashboard(weights) {
   const almiVal  = almi(lastDexa);
   const vatVal   = vatKg(lastDexa);
 
+  // Circumference data — find latest non-null of each
+  const waistMeasurements = weights.filter(w => w.waistCm != null);
+  const hipMeasurements   = weights.filter(w => w.hipCm   != null);
+  const neckMeasurements  = weights.filter(w => w.neckCm  != null);
+  const armMeasurements   = weights.filter(w => w.armCm   != null);
+  const thighMeasurements = weights.filter(w => w.thighCm != null);
+
+  const lastWaist = waistMeasurements[waistMeasurements.length - 1] || null;
+  const lastHip   = hipMeasurements[hipMeasurements.length - 1] || null;
+  const lastNeck  = neckMeasurements[neckMeasurements.length - 1] || null;
+
+  const whtrVal = lastWaist ? whtr(lastWaist.waistCm) : null;
+  const whrVal  = (lastWaist && lastHip) ? whr(lastWaist.waistCm, lastHip.hipCm) : null;
+  const navyBF  = (lastWaist && lastNeck) ? navyBodyFatPct(lastWaist.waistCm, lastNeck.neckCm) : null;
+
+  // Waist trend: diff between earliest and latest of last 90 days
+  let waistTrendCm = null;
+  if (waistMeasurements.length >= 2) {
+    const cutoff = new Date(); cutoff.setUTCDate(cutoff.getUTCDate() - 90);
+    const recent = waistMeasurements.filter(w => w.date >= cutoff);
+    if (recent.length >= 2) {
+      waistTrendCm = recent[recent.length - 1].waistCm - recent[0].waistCm;
+    } else {
+      // Fall back to overall first-to-last
+      waistTrendCm = waistMeasurements[waistMeasurements.length - 1].waistCm
+                   - waistMeasurements[0].waistCm;
+    }
+  }
+
   // ---- Header ----
   document.getElementById("data-status").textContent =
-    `${weights.length} weigh-ins · ${DEXA_SCANS.length} DEXA scan${DEXA_SCANS.length > 1 ? "s" : ""} · height ${HEIGHT_CM} cm`;
+    `${weights.length} weigh-ins · ${waistMeasurements.length} waist · ${DEXA_SCANS.length} DEXA · height ${HEIGHT_CM} cm`;
   document.getElementById("data-range").textContent =
     firstDate ? `${toISODate(firstDate)} → ${toISODate(latest.date)}` : "";
+
+  // ---- Build the waist tiles row dynamically ----
+  const waistTilesHtml = (() => {
+    if (!lastWaist) {
+      return `
+        <div class="card span-12">
+          <h2>Waist circumference</h2>
+          <div class="stat muted">No waist data yet</div>
+          <div class="note">Add a "Waist (cm)" column to the weight sheet. Even weekly measurements will unlock waist-to-height ratio — one of the best validated cardiometabolic indicators.</div>
+        </div>
+      `;
+    }
+    const daysSinceWaist = daysBetween(lastWaist.date, new Date());
+    const trendCls = waistTrendCm == null ? "flat"
+      : Math.abs(waistTrendCm) < 0.3 ? "flat"
+      : waistTrendCm > 0 ? "up" : "down";
+    const trendSign = waistTrendCm == null ? "" : (waistTrendCm > 0 ? "+" : "");
+    return `
+      <div class="card span-3">
+        <h2>Waist</h2>
+        <div class="stat">${fmt(lastWaist.waistCm, 1)}<span class="unit">cm</span></div>
+        <div class="stat-sub">${toISODate(lastWaist.date)} · ${daysSinceWaist}d ago</div>
+      </div>
+      <div class="card span-3">
+        <h2>Waist-to-height</h2>
+        <div class="stat">${fmt(whtrVal, 3)}</div>
+        <div class="stat-sub">${bracketLabel("whtr", whtrVal)} · rule: keep &lt; 0.50</div>
+      </div>
+      <div class="card span-3">
+        <h2>Waist trend</h2>
+        <div class="stat">${waistTrendCm == null ? "–" : trendSign + fmt(waistTrendCm, 1)}<span class="unit">cm</span></div>
+        <div class="stat-sub"><span class="${trendCls}">${
+          waistTrendCm == null ? "need ≥2 measurements"
+          : Math.abs(waistTrendCm) < 0.3 ? "stable"
+          : (waistTrendCm < 0 ? "losing waist · good if cutting" : "gaining waist")
+        }</span></div>
+      </div>
+      <div class="card span-3">
+        <h2>${navyBF != null ? "Navy BF%" : whrVal != null ? "Waist-to-hip" : "Unlock more"}</h2>
+        ${navyBF != null
+          ? `<div class="stat">${fmt(navyBF, 1)}<span class="unit">%</span></div>
+             <div class="stat-sub">tape-only estimate · DEXA says ${fmt(lastDexa.bodyFatPct, 1)}%</div>`
+          : whrVal != null
+            ? `<div class="stat">${fmt(whrVal, 2)}</div>
+               <div class="stat-sub">${bracketLabel("whr", whrVal)}</div>`
+            : `<div class="stat muted">Add neck + hip</div>
+               <div class="stat-sub">enables Navy BF% and W/H ratio</div>`}
+      </div>
+    `;
+  })();
 
   content.innerHTML = `
     <div class="card span-3">
@@ -507,15 +644,18 @@ function renderDashboard(weights) {
     </div>
 
     <div class="card span-12">
-      <h2>Weight (kg) over time</h2>
+      <h2>Weight (kg) + waist (cm) over time</h2>
       <div id="chart-weight" class="chart chart-tall"></div>
       <div class="legend" style="margin-top: 8px">
-        <div class="legend-item"><span class="legend-swatch" style="background:#3a4359"></span> Raw daily</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#3a4359"></span> Raw daily kg</div>
         <div class="legend-item"><span class="legend-swatch" style="background:#7c9cff"></span> 7-day avg</div>
         <div class="legend-item"><span class="legend-swatch" style="background:#4ade80"></span> 30-day avg</div>
+        ${lastWaist ? `<div class="legend-item"><span class="legend-swatch" style="background:#c084fc"></span> Waist (right axis)</div>` : ""}
       </div>
-      <div class="note">Daily weight has ±0.5 kg of noise (water, glycogen, food). The 7-day and 30-day averages are the actual signal.</div>
+      <div class="note">Daily weight has ±0.5 kg of noise (water, glycogen, food). The 7-day and 30-day averages are the actual signal. Waist circumference tracks fat mass directly — falling waist with stable weight = recomp.</div>
     </div>
+
+    ${waistTilesHtml}
 
     <div class="card span-3">
       <h2>Lean mass</h2>
@@ -563,10 +703,11 @@ function renderDashboard(weights) {
       <h2>Where you stand · men reference ranges</h2>
       <div id="compare-block"></div>
       <div class="note">
-        <b>FFMI</b> measures muscularity independent of body fat (fat-free mass / height²). Normalized FFMI adjusts to a 1.80 m reference so heights compare fairly.
-        <b>ALMI</b> is limb-only lean mass / height² — used clinically to screen for sarcopenia.
-        <b>A/G ratio</b> compares android (lower abdomen) to gynoid (hips) fat — elevated values mean central fat storage, which carries higher metabolic risk.
-        Brackets are general male reference ranges; individual variation is large.
+        <b>WHtR</b> (waist÷height) is one of the strongest single predictors of cardiometabolic risk — the heuristic is to keep it under 0.50.
+        <b>FFMI</b> measures muscularity independent of body fat.
+        <b>ALMI</b> is limb-only lean mass / height² (sarcopenia screen).
+        <b>A/G ratio</b> compares android (lower abdomen) to gynoid (hips) fat.
+        Brackets are general male reference ranges.
       </div>
     </div>
 
@@ -593,8 +734,8 @@ function renderDashboard(weights) {
     </div>
   `;
 
-  if (hasWeight) renderWeightChart(dailySeries, ma7, ma30);
-  renderCompareBlock(lastDexa);
+  if (hasWeight) renderWeightChart(dailySeries, ma7, ma30, weights);
+  renderCompareBlock(lastDexa, lastWaist, lastHip, lastNeck);
   renderComposition();
   renderRegional();
   renderSymmetry();
@@ -636,20 +777,27 @@ function dexaChange(field, unitLabel, upIsGood = "neutral") {
 }
 
 // ============================================================
-// Comparison bars: render a stacked-segment bar per metric with a marker
+// Comparison bars
 // ============================================================
-function renderCompareBlock(scan) {
+function renderCompareBlock(scan, lastWaist, lastHip, lastNeck) {
   const rows = [
-    { key: "ffmiNormalized", label: "FFMI",       sub: "normalized · kg/m²", value: ffmiNormalized(scan), fmtDp: 2 },
+    { key: "ffmiNormalized", label: "FFMI",       sub: "normalized · kg/m²",  value: ffmiNormalized(scan), fmtDp: 2 },
     { key: "almi",           label: "ALMI",       sub: "limb lean · kg/m²",   value: almi(scan),           fmtDp: 2 },
     { key: "bodyFatPct",     label: "Body fat %", sub: "men 30–39",            value: scan.bodyFatPct,      fmtDp: 1 },
     { key: "vatKg",          label: "VAT",        sub: "visceral fat · kg",   value: vatKg(scan),          fmtDp: 2 },
     { key: "agRatio",        label: "A/G ratio",  sub: "fat distribution",     value: scan.agRatio,         fmtDp: 2 },
     { key: "boneZ",          label: "Bone Z",     sub: "vs age peers",         value: scan.boneZScore,      fmtDp: 1 },
   ];
+  if (lastWaist) rows.splice(3, 0, {
+    key: "whtr", label: "Waist/height", sub: "cardiometabolic risk",
+    value: whtr(lastWaist.waistCm), fmtDp: 3,
+  });
+  if (lastWaist && lastHip) rows.push({
+    key: "whr", label: "Waist/hip", sub: "fat distribution risk",
+    value: whr(lastWaist.waistCm, lastHip.hipCm), fmtDp: 2,
+  });
 
-  const host = document.getElementById("compare-block");
-  host.innerHTML = rows.map(r => buildCompareRow(r)).join("");
+  document.getElementById("compare-block").innerHTML = rows.map(r => buildCompareRow(r)).join("");
 }
 
 function buildCompareRow({ key, label, sub, value, fmtDp }) {
@@ -685,7 +833,7 @@ function buildCompareRow({ key, label, sub, value, fmtDp }) {
   `;
 }
 
-function renderWeightChart(daily, ma7, ma30) {
+function renderWeightChart(daily, ma7, ma30, weights) {
   const xs = daily.map(d => d.iso);
   const raw = daily.map(d => d.kg);
 
@@ -694,34 +842,57 @@ function renderWeightChart(daily, ma7, ma30) {
   const hi = Math.ceil(Math.max(...finite) + 1);
 
   const traces = [
-    {
-      type: "scatter", mode: "markers", name: "Daily",
+    { type: "scatter", mode: "markers", name: "Daily",
       x: xs, y: raw,
       marker: { size: 4, color: "#3a4359", opacity: 0.7 },
       hovertemplate: "%{x}<br>%{y:.2f} kg<extra></extra>",
-      connectgaps: false,
-    },
-    {
-      type: "scatter", mode: "lines", name: "7-day avg",
+      connectgaps: false },
+    { type: "scatter", mode: "lines", name: "7-day avg",
       x: xs, y: ma7,
       line: { color: "#7c9cff", width: 2 },
       hovertemplate: "%{x}<br>7-day: %{y:.2f} kg<extra></extra>",
-      connectgaps: true,
-    },
-    {
-      type: "scatter", mode: "lines", name: "30-day avg",
+      connectgaps: true },
+    { type: "scatter", mode: "lines", name: "30-day avg",
       x: xs, y: ma30,
       line: { color: "#4ade80", width: 2.5 },
       hovertemplate: "%{x}<br>30-day: %{y:.2f} kg<extra></extra>",
-      connectgaps: true,
-    },
+      connectgaps: true },
   ];
-  Plotly.newPlot("chart-weight", traces, {
+
+  // Add waist overlay (right axis) if any waist data exists
+  const waistRecs = weights.filter(w => w.waistCm != null);
+  const hasWaist = waistRecs.length > 0;
+  if (hasWaist) {
+    traces.push({
+      type: "scatter", mode: "lines+markers", name: "Waist",
+      x: waistRecs.map(w => toISODate(w.date)),
+      y: waistRecs.map(w => w.waistCm),
+      yaxis: "y2",
+      line: { color: "#c084fc", width: 2, dash: "dot" },
+      marker: { size: 7, color: "#c084fc" },
+      hovertemplate: "%{x}<br>Waist: %{y:.1f} cm<extra></extra>",
+      connectgaps: true,
+    });
+  }
+
+  const layout = {
     ...layoutDefaults,
     showlegend: false,
-    margin: { l: 48, r: 16, t: 10, b: 40 },
+    margin: { l: 48, r: hasWaist ? 56 : 16, t: 10, b: 40 },
     yaxis: { ...layoutDefaults.yaxis, range: [lo, hi], title: "kg" },
-  }, plotlyConfig);
+  };
+  if (hasWaist) {
+    const wValues = waistRecs.map(w => w.waistCm);
+    const wLo = Math.floor(Math.min(...wValues) - 2);
+    const wHi = Math.ceil(Math.max(...wValues) + 2);
+    layout.yaxis2 = {
+      title: "cm", overlaying: "y", side: "right",
+      gridcolor: "rgba(0,0,0,0)", zerolinecolor: "rgba(0,0,0,0)",
+      tickcolor: "#8a93a6", range: [wLo, wHi],
+      titlefont: { color: "#c084fc" }, tickfont: { color: "#c084fc" },
+    };
+  }
+  Plotly.newPlot("chart-weight", traces, layout, plotlyConfig);
 }
 
 function renderComposition() {
