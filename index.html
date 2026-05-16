@@ -123,8 +123,9 @@
 // ============================================================
 const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZcwe6JZcbhyEe_QjWziIp6hfssOgZZAaWeLGXAQ5y9Q43PsyVD5Cdv6T85SAi1IDlqdRtJiWFb2ok/pub?gid=0&single=true&output=csv";
 
-// Known muscle-group section headers (order matters — they appear in this order in the sheet)
-const MUSCLE_GROUPS = ["CHEST", "SHOULDER", "TRICEPS", "BACK", "BICEPS", "LEGS"];
+// Known muscle-group section headers with curated colors. Groups appear in
+// the dashboard in the order they're encountered in the sheet, so this list
+// just acts as the color/palette source — it is NOT used to filter detection.
 const GROUP_COLORS = {
   CHEST:    "#ef4444",
   SHOULDER: "#f59e0b",
@@ -132,7 +133,32 @@ const GROUP_COLORS = {
   BACK:     "#22c55e",
   BICEPS:   "#06b6d4",
   LEGS:     "#8b5cf6",
+  CORE:     "#ec4899",
 };
+
+// Fallback palette for any muscle-group section added in the sheet that isn't
+// in GROUP_COLORS yet. The dashboard auto-detects new groups, so adding a new
+// section in the sheet (e.g. "FOREARMS") will Just Work — it'll get colored
+// from this palette in order of appearance.
+const FALLBACK_PALETTE = ["#f97316", "#14b8a6", "#a855f7", "#84cc16", "#0ea5e9", "#f43f5e", "#10b981"];
+
+// MUSCLE_GROUPS is populated at runtime from the sheet by buildLongFormat().
+// Default to the known list so any code that reads it before parsing still
+// has something sensible.
+let MUSCLE_GROUPS = Object.keys(GROUP_COLORS);
+
+// A row label is treated as a muscle-group section header if it's a short
+// all-uppercase word (letters/spaces/slashes only). This is the convention
+// used in the sheet — exercises are written in Title Case, sections in CAPS.
+// Explicit exclusions cover known metadata + the special "ABS" yes/no row.
+function isSectionHeader(cell) {
+  if (!cell) return false;
+  const trimmed = cell.trim();
+  if (!trimmed || trimmed.length > 20) return false;
+  if (/^(where|details|other training|waist)/i.test(trimmed)) return false;
+  if (trimmed.toUpperCase() === "ABS") return false;
+  return /^[A-Z][A-Z\s\/]*$/.test(trimmed);
+}
 
 // All weights are in pounds.
 // Adrià's bodyweight is ~155 lbs (~70 kg). Update this if it changes significantly —
@@ -227,20 +253,37 @@ function buildLongFormat(rows) {
   const dateRow  = rows[1] || [];
 
   // Scan column A to find section headers and exercise rows.
-  const exerciseMeta = []; // {rowIdx, name, group}
+  // Section headers are auto-detected via isSectionHeader() — so adding a new
+  // muscle-group section in the sheet (CORE, FOREARMS, ABS-WORK, etc.) Just
+  // Works without code changes.
+  const exerciseMeta = [];        // { rowIdx, name, group }
+  const detectedGroups = [];      // sheet-order list of muscle groups found
   let currentGroup = null;
   for (let r = 0; r < rows.length; r++) {
     const cell = (rows[r][0] || "").trim();
     if (!cell) continue;
-    const up = cell.toUpperCase();
-    if (MUSCLE_GROUPS.includes(up)) {
-      currentGroup = up;
+    // Hard stop at known trailing metadata rows (Where / Details / Other training).
+    if (/^(where|details|other training)/i.test(cell)) break;
+    if (isSectionHeader(cell)) {
+      currentGroup = cell.toUpperCase();
+      if (!detectedGroups.includes(currentGroup)) detectedGroups.push(currentGroup);
       continue;
     }
-    // Stop at trailing metadata rows (Where, Details, etc.)
-    if (/^(where|details|other training)/i.test(cell)) break;
     if (currentGroup && cell !== "ABS") {
       exerciseMeta.push({ rowIdx: r, name: cell, group: currentGroup });
+    }
+  }
+
+  // Promote detected groups to the runtime MUSCLE_GROUPS list and assign
+  // palette colors to any newcomers (e.g. user adds "FOREARMS" tomorrow).
+  if (detectedGroups.length > 0) {
+    MUSCLE_GROUPS = detectedGroups;
+    let palIdx = 0;
+    for (const g of detectedGroups) {
+      if (!GROUP_COLORS[g]) {
+        GROUP_COLORS[g] = FALLBACK_PALETTE[palIdx % FALLBACK_PALETTE.length];
+        palIdx++;
+      }
     }
   }
 
@@ -254,6 +297,11 @@ function buildLongFormat(rows) {
     if (!date) continue; // skip anomaly columns (January 2024, MAX, etc.)
 
     const sessionType = (typeRow[c] || "").trim();
+    // A non-numeric session-type label (Push / Pull / Legs / Calisthenics /
+    // Core / PT Legs / ...) means the user logged a workout that day even if
+    // no individual exercise cells were filled in. Numeric values in row 0 are
+    // a running tally and must NOT be treated as a session label.
+    const hasLabel = sessionType && !/^\d+$/.test(sessionType);
     const exs = [];
     for (const m of exerciseMeta) {
       const raw = rows[m.rowIdx] ? rows[m.rowIdx][c] : "";
@@ -279,7 +327,12 @@ function buildLongFormat(rows) {
       records.push({ date, group: m.group, exercise: m.name, weight, reps, volume,
                      rawWeight, isBW, repsAssumed: !rawReps });
     }
-    if (exs.length > 0) {
+    // Count the column as a session if either:
+    //   (a) at least one exercise cell parsed to a real weight, OR
+    //   (b) there's a non-numeric session-type label in row 0 (e.g. "Push",
+    //       "Calisthenics", "Core", "PT Legs") — covers days logged as
+    //       label + date only with no individual exercise rows filled in.
+    if (exs.length > 0 || hasLabel) {
       sessions.push({ date, sessionType, exercises: exs, colIdx: c });
     }
   }
