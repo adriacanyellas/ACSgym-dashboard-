@@ -123,42 +123,43 @@
 // ============================================================
 const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZcwe6JZcbhyEe_QjWziIp6hfssOgZZAaWeLGXAQ5y9Q43PsyVD5Cdv6T85SAi1IDlqdRtJiWFb2ok/pub?gid=0&single=true&output=csv";
 
-// Known muscle-group section headers with curated colors. Groups appear in
-// the dashboard in the order they're encountered in the sheet, so this list
-// just acts as the color/palette source — it is NOT used to filter detection.
-const GROUP_COLORS = {
+// Canonical display order for known muscle groups. Any new section header found
+// in the sheet (e.g. "CORE", "CALISTHENICS") is automatically picked up and
+// appended after these — see buildLongFormat() for the structural detection.
+const KNOWN_GROUP_ORDER = ["CHEST", "SHOULDER", "TRICEPS", "BACK", "BICEPS", "LEGS"];
+const KNOWN_GROUP_COLORS = {
   CHEST:    "#ef4444",
   SHOULDER: "#f59e0b",
   TRICEPS:  "#eab308",
   BACK:     "#22c55e",
   BICEPS:   "#06b6d4",
   LEGS:     "#8b5cf6",
-  CORE:     "#ec4899",
 };
+// Fallback palette for groups not in KNOWN_GROUP_ORDER (CORE, CALISTHENICS, etc.)
+const FALLBACK_PALETTE = ["#ec4899", "#14b8a6", "#a78bfa", "#f97316", "#84cc16", "#0ea5e9"];
 
-// Fallback palette for any muscle-group section added in the sheet that isn't
-// in GROUP_COLORS yet. The dashboard auto-detects new groups, so adding a new
-// section in the sheet (e.g. "FOREARMS") will Just Work — it'll get colored
-// from this palette in order of appearance.
-const FALLBACK_PALETTE = ["#f97316", "#14b8a6", "#a855f7", "#84cc16", "#0ea5e9", "#f43f5e", "#10b981"];
-
-// MUSCLE_GROUPS is populated at runtime from the sheet by buildLongFormat().
-// Default to the known list so any code that reads it before parsing still
-// has something sensible.
-let MUSCLE_GROUPS = Object.keys(GROUP_COLORS);
-
-// A row label is treated as a muscle-group section header if it's a short
-// all-uppercase word (letters/spaces/slashes only). This is the convention
-// used in the sheet — exercises are written in Title Case, sections in CAPS.
-// Explicit exclusions cover known metadata + the special "ABS" yes/no row.
-function isSectionHeader(cell) {
-  if (!cell) return false;
-  const trimmed = cell.trim();
-  if (!trimmed || trimmed.length > 20) return false;
-  if (/^(where|details|other training|waist)/i.test(trimmed)) return false;
-  if (trimmed.toUpperCase() === "ABS") return false;
-  return /^[A-Z][A-Z\s\/]*$/.test(trimmed);
+const _assignedFallbackColors = new Map();
+let _fallbackIdx = 0;
+function colorForGroup(name) {
+  if (!name) return "#7c9cff";
+  const up = name.toUpperCase();
+  if (KNOWN_GROUP_COLORS[up]) return KNOWN_GROUP_COLORS[up];
+  if (_assignedFallbackColors.has(up)) return _assignedFallbackColors.get(up);
+  const c = FALLBACK_PALETTE[_fallbackIdx % FALLBACK_PALETTE.length];
+  _fallbackIdx++;
+  _assignedFallbackColors.set(up, c);
+  return c;
 }
+function prettyGroup(g) {
+  if (!g) return "";
+  return g[0].toUpperCase() + g.slice(1).toLowerCase();
+}
+
+// Trailing metadata rows that should stop parsing (case-insensitive, prefix-match).
+// These appear AFTER all exercise rows. Anything at the top of the sheet that isn't
+// a section header (e.g. "Waist circumference") is silently dropped because no
+// currentGroup has been set yet.
+const META_ROW_PATTERNS = /^(where|details|other training)/i;
 
 // All weights are in pounds.
 // Adrià's bodyweight is ~155 lbs (~70 kg). Update this if it changes significantly —
@@ -252,40 +253,57 @@ function buildLongFormat(rows) {
   const typeRow  = rows[0] || [];
   const dateRow  = rows[1] || [];
 
-  // Scan column A to find section headers and exercise rows.
-  // Section headers are auto-detected via isSectionHeader() — so adding a new
-  // muscle-group section in the sheet (CORE, FOREARMS, ABS-WORK, etc.) Just
-  // Works without code changes.
-  const exerciseMeta = [];        // { rowIdx, name, group }
-  const detectedGroups = [];      // sheet-order list of muscle groups found
+  // Indices of columns whose header is a valid date — used both for parsing sessions
+  // and for the "is this a section header?" structural check.
+  const dateColIdx = [];
+  for (let c = 1; c < dateRow.length; c++) {
+    if (parseSheetDate(dateRow[c])) dateColIdx.push(c);
+  }
+
+  // Detect section headers structurally: column A non-empty AND no data in any
+  // date column. This lets new groups (CORE, CALISTHENICS, …) be picked up
+  // automatically without changing code. New exercises under any existing group
+  // also flow through automatically because exercise rows are likewise discovered
+  // by structure (col A non-empty AND at least one date-column cell non-empty).
+  const exerciseMeta = []; // {rowIdx, name, group}
   let currentGroup = null;
-  for (let r = 0; r < rows.length; r++) {
-    const cell = (rows[r][0] || "").trim();
+  for (let r = 2; r < rows.length; r++) { // skip type+date header rows
+    const row = rows[r] || [];
+    const cell = (row[0] || "").trim();
     if (!cell) continue;
-    // Hard stop at known trailing metadata rows (Where / Details / Other training).
-    if (/^(where|details|other training)/i.test(cell)) break;
-    if (isSectionHeader(cell)) {
-      currentGroup = cell.toUpperCase();
-      if (!detectedGroups.includes(currentGroup)) detectedGroups.push(currentGroup);
+    // Stop at trailing metadata rows (Where, Details, Other training, …)
+    if (META_ROW_PATTERNS.test(cell)) break;
+    const up = cell.toUpperCase();
+    const hasData = dateColIdx.some(c => (row[c] || "").trim() !== "");
+    // A row is a section header if:
+    //   (a) it matches a known group name (forgives stray typos on the header row,
+    //       like a "Surf" logged accidentally on the BACK row), OR
+    //   (b) it has no data in any date column (purely structural — picks up new
+    //       groups like CORE / CALISTHENICS without code changes)
+    const isHeader = KNOWN_GROUP_ORDER.includes(up) || !hasData;
+    if (isHeader) {
+      currentGroup = up;
       continue;
     }
-    if (currentGroup && cell !== "ABS") {
+    // Exercise row. Assign to current group; skip orphans (rows before first header).
+    if (currentGroup) {
       exerciseMeta.push({ rowIdx: r, name: cell, group: currentGroup });
     }
   }
 
-  // Promote detected groups to the runtime MUSCLE_GROUPS list and assign
-  // palette colors to any newcomers (e.g. user adds "FOREARMS" tomorrow).
-  if (detectedGroups.length > 0) {
-    MUSCLE_GROUPS = detectedGroups;
-    let palIdx = 0;
-    for (const g of detectedGroups) {
-      if (!GROUP_COLORS[g]) {
-        GROUP_COLORS[g] = FALLBACK_PALETTE[palIdx % FALLBACK_PALETTE.length];
-        palIdx++;
-      }
+  // Build the discovered group list: known groups in canonical order first,
+  // then any new/unknown groups in the order they appeared in the sheet.
+  const discoveredSet = new Set(exerciseMeta.map(m => m.group));
+  const seenUnknownInOrder = [];
+  for (const m of exerciseMeta) {
+    if (!KNOWN_GROUP_ORDER.includes(m.group) && !seenUnknownInOrder.includes(m.group)) {
+      seenUnknownInOrder.push(m.group);
     }
   }
+  const groups = [
+    ...KNOWN_GROUP_ORDER.filter(g => discoveredSet.has(g)),
+    ...seenUnknownInOrder,
+  ];
 
   // Iterate columns. Skip col 0 (row labels) and the last 2 (Last rep number / MAX).
   const sessions = []; // { date, sessionType, exercises: [{group, name, weight}], colIdx }
@@ -297,11 +315,6 @@ function buildLongFormat(rows) {
     if (!date) continue; // skip anomaly columns (January 2024, MAX, etc.)
 
     const sessionType = (typeRow[c] || "").trim();
-    // A non-numeric session-type label (Push / Pull / Legs / Calisthenics /
-    // Core / PT Legs / ...) means the user logged a workout that day even if
-    // no individual exercise cells were filled in. Numeric values in row 0 are
-    // a running tally and must NOT be treated as a session label.
-    const hasLabel = sessionType && !/^\d+$/.test(sessionType);
     const exs = [];
     for (const m of exerciseMeta) {
       const raw = rows[m.rowIdx] ? rows[m.rowIdx][c] : "";
@@ -327,17 +340,12 @@ function buildLongFormat(rows) {
       records.push({ date, group: m.group, exercise: m.name, weight, reps, volume,
                      rawWeight, isBW, repsAssumed: !rawReps });
     }
-    // Count the column as a session if either:
-    //   (a) at least one exercise cell parsed to a real weight, OR
-    //   (b) there's a non-numeric session-type label in row 0 (e.g. "Push",
-    //       "Calisthenics", "Core", "PT Legs") — covers days logged as
-    //       label + date only with no individual exercise rows filled in.
-    if (exs.length > 0 || hasLabel) {
+    if (exs.length > 0) {
       sessions.push({ date, sessionType, exercises: exs, colIdx: c });
     }
   }
 
-  return { sessions, records, exerciseMeta };
+  return { sessions, records, exerciseMeta, groups };
 }
 
 // ============================================================
@@ -434,7 +442,7 @@ const layoutDefaults = {
 const plotlyConfig = { responsive: true, displayModeBar: false };
 
 function renderDashboard(data) {
-  const { sessions, records } = data;
+  const { sessions, records, groups } = data;
   const content = document.getElementById("content");
   content.className = "";
   content.classList.add("grid");
@@ -488,7 +496,7 @@ function renderDashboard(data) {
         <label for="filter-group">Muscle group</label>
         <select id="filter-group">
           <option value="ALL">All</option>
-          ${MUSCLE_GROUPS.map(g => `<option value="${g}">${g[0] + g.slice(1).toLowerCase()}</option>`).join("")}
+          ${groups.map(g => `<option value="${g}">${prettyGroup(g)}</option>`).join("")}
         </select>
         <label for="filter-min">Min data points</label>
         <select id="filter-min">
@@ -555,7 +563,7 @@ function renderDashboard(data) {
   // --- Weekly frequency chart ---
   renderWeekly(sessions);
   // --- Muscle group distribution (last 90 days) ---
-  renderGroups(sessions);
+  renderGroups(sessions, groups);
   // --- Calendar heatmap ---
   renderCalendar(sessions);
   // --- Progression ---
@@ -568,10 +576,10 @@ function renderDashboard(data) {
   redraw();
 
   // --- Volume ---
-  renderVolume(sessions, records);
+  renderVolume(sessions, records, groups);
 
   // --- Per-exercise breakdown (one section per muscle group) ---
-  renderPerExerciseBreakdown(records);
+  renderPerExerciseBreakdown(records, groups);
 }
 
 function renderWeekly(sessions) {
@@ -608,25 +616,25 @@ function renderWeekly(sessions) {
   }, plotlyConfig);
 }
 
-function renderGroups(sessions) {
+function renderGroups(sessions, groups) {
   const cutoff = new Date(); cutoff.setUTCDate(cutoff.getUTCDate() - 90);
   const counts = {};
-  for (const g of MUSCLE_GROUPS) counts[g] = 0;
+  for (const g of groups) counts[g] = 0;
   for (const s of sessions) {
     if (s.date < cutoff) continue;
     const groupsHit = new Set(s.exercises.map(e => e.group));
     for (const g of groupsHit) counts[g] = (counts[g] || 0) + 1;
   }
-  const keys = MUSCLE_GROUPS;
+  const keys = groups;
   const maxCount = Math.max(1, ...keys.map(g => counts[g]));
   // Pick a tick interval that avoids overcrowding
   const dtick = maxCount <= 10 ? 1 : maxCount <= 30 ? 5 : 10;
   Plotly.newPlot("chart-groups", [{
     type: "bar",
     orientation: "h",
-    y: keys.map(g => g[0] + g.slice(1).toLowerCase()),
+    y: keys.map(g => prettyGroup(g)),
     x: keys.map(g => counts[g]),
-    marker: { color: keys.map(g => GROUP_COLORS[g]) },
+    marker: { color: keys.map(g => colorForGroup(g)) },
     hovertemplate: "%{y}: %{x} sessions<extra></extra>",
   }], {
     ...layoutDefaults,
@@ -730,7 +738,7 @@ function renderProgression(progMap, groupFilter, minPoints) {
       x: points.map(p => toISODate(p.date)),
       y: points.map(p => p.weight),
       customdata,
-      line: { color: GROUP_COLORS[group] || "#7c9cff", width: 2, shape: "linear" },
+      line: { color: colorForGroup(group), width: 2, shape: "linear" },
       marker: { size: 5 },
       connectgaps: true,
       hovertemplate:
@@ -759,7 +767,7 @@ function renderProgression(progMap, groupFilter, minPoints) {
   }, plotlyConfig);
 }
 
-function renderVolume(sessions, records) {
+function renderVolume(sessions, records, groups) {
   const withReps = records.filter(r => r.reps && r.volume != null);
   const hint = document.getElementById("volume-hint");
   const chartDiv = document.getElementById("chart-volume");
@@ -792,13 +800,13 @@ function renderVolume(sessions, records) {
     `across ${coveredSessions} sessions. Bodyweight exercises use ${BODYWEIGHT_LBS} lbs + any added load.`;
 
   // Stacked bar by muscle group so you can see which groups drove the day's volume
-  const traces = MUSCLE_GROUPS.map(g => ({
+  const traces = groups.map(g => ({
     type: "bar",
-    name: g[0] + g.slice(1).toLowerCase(),
+    name: prettyGroup(g),
     x: dates,
     y: dates.map(d => perDay.get(d).breakdown[g] || 0),
-    marker: { color: GROUP_COLORS[g] },
-    hovertemplate: `<b>${g[0] + g.slice(1).toLowerCase()}</b><br>%{x}<br>%{y} lbs<extra></extra>`,
+    marker: { color: colorForGroup(g) },
+    hovertemplate: `<b>${prettyGroup(g)}</b><br>%{x}<br>%{y} lbs<extra></extra>`,
   })).filter(t => t.y.some(v => v > 0));
 
   Plotly.newPlot("chart-volume", traces, {
@@ -815,29 +823,29 @@ function renderVolume(sessions, records) {
 // Each mini-chart overlays per-session weight (line, primary axis) and per-session
 // volume (bars, secondary axis). Exercises are ordered by session count (desc) so
 // the ones trained most often appear first.
-function renderPerExerciseBreakdown(records) {
+function renderPerExerciseBreakdown(records, groups) {
   const container = document.getElementById("per-exercise-sections");
   if (!container) return;
   container.innerHTML = ""; // reset
 
   // records → group → exercise → points[]
   const byGroup = new Map();
-  for (const g of MUSCLE_GROUPS) byGroup.set(g, new Map());
+  for (const g of groups) byGroup.set(g, new Map());
   for (const r of records) {
+    if (!byGroup.has(r.group)) byGroup.set(r.group, new Map());
     const gMap = byGroup.get(r.group);
-    if (!gMap) continue;
     if (!gMap.has(r.exercise)) gMap.set(r.exercise, []);
     gMap.get(r.exercise).push(r);
   }
 
-  for (const group of MUSCLE_GROUPS) {
+  for (const group of groups) {
     const gMap = byGroup.get(group);
     if (!gMap || gMap.size === 0) continue;
 
     // Sort exercises by session count, descending
     const exercises = [...gMap.entries()].sort((a, b) => b[1].length - a[1].length);
-    const color = GROUP_COLORS[group];
-    const pretty = group[0] + group.slice(1).toLowerCase();
+    const color = colorForGroup(group);
+    const pretty = prettyGroup(group);
 
     // Card per muscle group, containing a responsive grid of mini-charts
     const section = document.createElement("div");
