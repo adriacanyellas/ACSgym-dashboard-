@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="ca">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Panell Corporal · Joana</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel2: #1c2230;
+    --border: #252c3a;
+    --text: #e6e8ee;
+    --muted: #8a93a6;
+    --accent: #7c9cff;
+    --good: #4ade80;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --waist: #c084fc;
+  }
+  * { box-sizing: border-box }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", sans-serif;
+  }
+  header {
+    padding: 22px 28px 10px;
+    display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px;
+  }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600 }
+  header .sub { color: var(--muted); font-size: 13px }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 16px;
+    padding: 12px 24px 40px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    min-height: 0;
+  }
+  .card h2 {
+    margin: 0 0 10px 0; font-size: 13px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .span-3 { grid-column: span 3 }
+  .span-4 { grid-column: span 4 }
+  .span-6 { grid-column: span 6 }
+  .span-8 { grid-column: span 8 }
+  .span-12 { grid-column: span 12 }
+  @media (max-width: 960px) {
+    .span-3, .span-4, .span-6, .span-8 { grid-column: span 12 }
+  }
+  .stat { font-size: 34px; font-weight: 700; line-height: 1 }
+  .stat .unit { font-size: 13px; color: var(--muted); font-weight: 500; margin-left: 6px }
+  .stat-sub { color: var(--muted); font-size: 12px; margin-top: 6px }
+  .stat-sub .up { color: var(--bad) }
+  .stat-sub .down { color: var(--good) }
+  .stat-sub .flat { color: var(--muted) }
+  .stat.muted { color: var(--muted); font-size: 18px }
+  .chart { width: 100%; height: 300px }
+  .chart-tall { height: 360px }
+  .loading, .error {
+    padding: 32px; text-align: center; color: var(--muted);
+  }
+  .error { color: var(--bad) }
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    background: var(--panel2); color: var(--muted);
+    font-size: 11px; border: 1px solid var(--border);
+  }
+  .note { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px }
+  .legend { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap }
+  .legend-item { display: flex; align-items: center; gap: 4px }
+  .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px }
+
+  .compare-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 100px;
+    align-items: center;
+    gap: 12px;
+    margin: 18px 0;
+    font-size: 12px;
+  }
+  .compare-label { color: var(--muted); font-weight: 500 }
+  .compare-label small { display: block; color: var(--muted); opacity: 0.7; font-size: 10px;
+    text-transform: uppercase; letter-spacing: .04em; margin-top: 2px }
+  .compare-value { color: var(--text); font-weight: 600; text-align: right;
+    font-variant-numeric: tabular-nums; font-size: 14px }
+  .compare-value small { display: block; color: var(--muted); font-size: 10px; font-weight: 500 }
+  .compare-track {
+    position: relative; height: 26px; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 5px;
+  }
+  .compare-seg {
+    position: absolute; top: 0; bottom: 0; border-right: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: var(--muted); padding: 0 2px; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis;
+  }
+  .compare-seg:last-child { border-right: none }
+  .compare-marker {
+    position: absolute; top: -4px; bottom: -4px; width: 3px;
+    background: var(--accent); border-radius: 2px; z-index: 2;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+  }
+  .compare-marker::after {
+    content: ''; position: absolute; top: -6px; left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent; border-bottom-color: var(--accent);
+  }
+  @media (max-width: 600px) {
+    .compare-row { grid-template-columns: 90px 1fr 80px; gap: 8px }
+    .compare-seg { font-size: 8px }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Panell Corporal · Joana</h1>
+    <div class="sub" id="data-status">Carregant dades…</div>
+  </div>
+  <div class="pill" id="data-range"></div>
+</header>
+
+<div id="content" class="loading">Carregant registre de pes…</div>
+
+<script>
+// ============================================================
+// Config (per-person, generated)
+// ============================================================
+const PERSON_NAME = "Joana";
+const WEIGHT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTLxHc_l2UjKaK5jQkYv-KJOtEyC-hgKoxqv-1s3rLWAKoGfpeRil6UlONFPztlkVm-NSC81JYNFhNc/pub?output=csv";
+const HEIGHT_CM = 165;
+const SEX = "female";   // "male" | "female"
+const AGE = 61;
+
+const HEIGHT_M = HEIGHT_CM / 100;
+const HEIGHT_M2 = HEIGHT_M * HEIGHT_M;
+
+// ============================================================
+// Reference brackets — male and female sets
+// (CA labels match Catalan UI)
+// ============================================================
+const BRACKETS_MALE = {
+  bodyFatPct: {
+    unit: "%", domain: [5, 35],
+    segments: [
+      { max: 11, label: "essencial" },
+      { max: 14, label: "atlètic" },
+      { max: 17, label: "en forma" },
+      { max: 22, label: "fitness" },
+      { max: 26, label: "mitjà" },
+      { max: 30, label: "sobre mitjana" },
+      { max: 35, label: "obesitat" },
+    ],
+  },
+  ffmiNormalized: {
+    unit: "kg/m²", domain: [16, 25],
+    segments: [
+      { max: 18,   label: "no entrenat" },
+      { max: 19.5, label: "novell" },
+      { max: 21,   label: "intermedi" },
+      { max: 22.5, label: "avançat" },
+      { max: 24,   label: "elit natural" },
+      { max: 25,   label: "sostre" },
+    ],
+  },
+  almi: {
+    unit: "kg/m²", domain: [6, 11],
+    segments: [
+      { max: 7,  label: "sarcopènia" },
+      { max: 8,  label: "baix" },
+      { max: 9,  label: "mitjà" },
+      { max: 10, label: "sobre mitjana" },
+      { max: 11, label: "atlètic" },
+    ],
+  },
+  whtr: {
+    unit: "", domain: [0.35, 0.70],
+    segments: [
+      { max: 0.40, label: "magre" },
+      { max: 0.50, label: "saludable" },
+      { max: 0.60, label: "elevat" },
+      { max: 0.70, label: "risc alt" },
+    ],
+  },
+  whr: {
+    unit: "", domain: [0.75, 1.10],
+    segments: [
+      { max: 0.85, label: "baix" },
+      { max: 0.90, label: "saludable" },
+      { max: 1.00, label: "augmentat" },
+      { max: 1.10, label: "risc alt" },
+    ],
+  },
+};
+
+const BRACKETS_FEMALE = {
+  // Adult women, broader for age 50+
+  bodyFatPct: {
+    unit: "%", domain: [10, 45],
+    segments: [
+      { max: 18, label: "essencial" },
+      { max: 22, label: "atlètic" },
+      { max: 27, label: "en forma" },
+      { max: 32, label: "fitness" },
+      { max: 37, label: "mitjà" },
+      { max: 42, label: "sobre mitjana" },
+      { max: 45, label: "obesitat" },
+    ],
+  },
+  ffmiNormalized: {
+    unit: "kg/m²", domain: [12, 22],
+    segments: [
+      { max: 14,   label: "no entrenada" },
+      { max: 15.5, label: "novella" },
+      { max: 17,   label: "intermèdia" },
+      { max: 18.5, label: "avançada" },
+      { max: 20,   label: "elit natural" },
+      { max: 22,   label: "sostre" },
+    ],
+  },
+  almi: {
+    // EWGSOP2 female cutoff for low ALMI: 5.5 kg/m²
+    unit: "kg/m²", domain: [4, 9],
+    segments: [
+      { max: 5.5, label: "sarcopènia" },
+      { max: 6.5, label: "baix" },
+      { max: 7.5, label: "mitjà" },
+      { max: 8.5, label: "sobre mitjana" },
+      { max: 9.0, label: "atlètic" },
+    ],
+  },
+  whtr: {
+    // Same rule: <0.5 healthy
+    unit: "", domain: [0.35, 0.70],
+    segments: [
+      { max: 0.40, label: "magra" },
+      { max: 0.50, label: "saludable" },
+      { max: 0.60, label: "elevat" },
+      { max: 0.70, label: "risc alt" },
+    ],
+  },
+  whr: {
+    // WHO thresholds for women
+    unit: "", domain: [0.65, 1.00],
+    segments: [
+      { max: 0.75, label: "baix" },
+      { max: 0.80, label: "saludable" },
+      { max: 0.85, label: "augmentat" },
+      { max: 1.00, label: "risc alt" },
+    ],
+  },
+};
+
+const BRACKETS = (SEX === "female") ? BRACKETS_FEMALE : BRACKETS_MALE;
+
+function bracketLabel(metricKey, value) {
+  const b = BRACKETS[metricKey];
+  if (!b) return "";
+  for (const seg of b.segments) {
+    if (value <= seg.max) return seg.label;
+  }
+  return b.segments[b.segments.length - 1].label;
+}
+
+// ============================================================
+// Derived metrics
+// ============================================================
+function whtr(waistCm) { return waistCm / HEIGHT_CM; }
+function whr(waistCm, hipCm) { return waistCm / hipCm; }
+
+// Navy body fat formula. Different by sex.
+// Men:   86.010·log10(waist−neck) − 70.041·log10(height) + 36.76
+// Women: 163.205·log10(waist+hip−neck) − 97.684·log10(height) − 78.387
+// All in cm.
+function navyBodyFatPct({ waistCm, neckCm, hipCm }) {
+  if (waistCm == null || neckCm == null) return null;
+  if (SEX === "female") {
+    if (hipCm == null) return null;
+    if (waistCm + hipCm <= neckCm) return null;
+    return 163.205 * Math.log10(waistCm + hipCm - neckCm)
+         - 97.684  * Math.log10(HEIGHT_CM) - 78.387;
+  } else {
+    if (waistCm <= neckCm) return null;
+    return 86.010 * Math.log10(waistCm - neckCm)
+         - 70.041 * Math.log10(HEIGHT_CM) + 36.76;
+  }
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+function parseDate(s) {
+  if (!s) return null;
+  const str = String(s).trim();
+  let m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    return isNaN(d) ? null : d;
+  }
+  m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{1,2})$/);
+  if (m) {
+    const yy = +m[1], mm = +m[2], dd = +m[3];
+    if (yy <= 99 && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+      const d = new Date(Date.UTC(2000 + yy, mm - 1, dd));
+      return isNaN(d) ? null : d;
+    }
+  }
+  return null;
+}
+
+function toISODate(d) { return d.toISOString().slice(0, 10); }
+function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
+function fmt(n, dp = 1) { return n == null || isNaN(n) ? "–" : n.toFixed(dp) }
+
+function rollingMean(xs, window) {
+  const half = Math.floor(window / 2);
+  const out = new Array(xs.length).fill(null);
+  for (let i = 0; i < xs.length; i++) {
+    let sum = 0, n = 0;
+    for (let j = Math.max(0, i - half); j <= Math.min(xs.length - 1, i + half); j++) {
+      if (xs[j] != null) { sum += xs[j]; n++; }
+    }
+    if (n >= Math.ceil(window / 3)) out[i] = sum / n;
+  }
+  return out;
+}
+
+function recentTrendKgPerDay(weights, days) {
+  const cutoff = new Date(); cutoff.setUTCDate(cutoff.getUTCDate() - days);
+  const recent = weights.filter(w => w.date >= cutoff);
+  if (recent.length < 5) return null;
+  const t0 = recent[0].date.getTime();
+  const xs = recent.map(w => (w.date.getTime() - t0) / 86400000);
+  const ys = recent.map(w => w.kg);
+  const n = xs.length;
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - meanX) * (ys[i] - meanY);
+    den += (xs[i] - meanX) ** 2;
+  }
+  return den === 0 ? null : num / den;
+}
+
+// ============================================================
+// CSV parsing — recognises Catalan headers (Data, Pes, Cintura,
+// Maluc, Coll, Braç, Cuixa) and English fallbacks.
+// ============================================================
+function parseWeightCSV(rows) {
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const r = (rows[i] || []).map(c => String(c || "").trim().toLowerCase());
+    const hasDate = r.some(c => c === "data" || c === "date");
+    const hasWeight = r.some(c => c.startsWith("pes") || c.startsWith("weight"));
+    if (hasDate && hasWeight) { headerIdx = i; break; }
+  }
+  if (headerIdx < 0) return [];
+
+  const header = rows[headerIdx].map(c => String(c || "").trim().toLowerCase());
+  const colOf = (predicate) => header.findIndex(predicate);
+  const idxDate   = colOf(c => c === "data" || c === "date");
+  const idxWeight = colOf(c => c.startsWith("pes") || c.startsWith("weight"));
+  const idxWaist  = colOf(c => c.startsWith("cintura") || c.startsWith("waist"));
+  const idxHip    = colOf(c => c.startsWith("maluc") || c.startsWith("hip"));
+  const idxNeck   = colOf(c => c.startsWith("coll") || c.startsWith("neck"));
+  const idxArm    = colOf(c => c.startsWith("braç") || c.startsWith("brac") || c.startsWith("arm"));
+  const idxThigh  = colOf(c => c.startsWith("cuixa") || c.startsWith("thigh"));
+
+  const num = (r, i) => {
+    if (i < 0) return null;
+    let v = (r[i] || "").trim();
+    if (!v) return null;
+    // Catalan often uses comma decimals
+    v = v.replace(",", ".");
+    const n = parseFloat(v);
+    return isNaN(n) ? null : n;
+  };
+
+  const records = [];
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const dStr = (r[idxDate] || "").trim();
+    const wStr = (r[idxWeight] || "").trim();
+    if (!dStr || !wStr) continue;
+    const date = parseDate(dStr);
+    const kg = parseFloat(String(wStr).replace(",", "."));
+    if (!date || isNaN(kg)) continue;
+    if (kg < 35 || kg > 150) continue;
+    records.push({
+      date, kg,
+      waistCm: num(r, idxWaist),
+      hipCm:   num(r, idxHip),
+      neckCm:  num(r, idxNeck),
+      armCm:   num(r, idxArm),
+      thighCm: num(r, idxThigh),
+    });
+  }
+  records.sort((a, b) => a.date - b.date);
+
+  const byDay = new Map();
+  for (const r of records) {
+    const k = toISODate(r.date);
+    if (!byDay.has(k)) byDay.set(k, []);
+    byDay.get(k).push(r);
+  }
+  const collapsed = [];
+  for (const [k, vals] of byDay) {
+    const kg = vals.reduce((s, v) => s + v.kg, 0) / vals.length;
+    const pickFirst = (key) => vals.find(v => v[key] != null)?.[key] ?? null;
+    collapsed.push({
+      date: new Date(k + "T00:00:00Z"),
+      kg,
+      waistCm: pickFirst("waistCm"),
+      hipCm:   pickFirst("hipCm"),
+      neckCm:  pickFirst("neckCm"),
+      armCm:   pickFirst("armCm"),
+      thighCm: pickFirst("thighCm"),
+    });
+  }
+  collapsed.sort((a, b) => a.date - b.date);
+  return collapsed;
+}
+
+function fillDailySeries(weights) {
+  if (weights.length === 0) return [];
+  const start = new Date(weights[0].date);
+  const end = new Date(); end.setUTCHours(0, 0, 0, 0);
+  const lookup = new Map(weights.map(w => [toISODate(w.date), w]));
+  const out = [];
+  for (let d = new Date(start); d <= end; d = new Date(d.getTime() + 86400000)) {
+    const k = toISODate(d);
+    const rec = lookup.get(k);
+    out.push({
+      date: new Date(d), iso: k,
+      kg: rec ? rec.kg : null,
+      waistCm: rec ? rec.waistCm : null,
+    });
+  }
+  return out;
+}
+
+// ============================================================
+// Rendering
+// ============================================================
+const layoutDefaults = {
+  paper_bgcolor: "rgba(0,0,0,0)",
+  plot_bgcolor: "rgba(0,0,0,0)",
+  font: { family: "inherit", color: "#e6e8ee", size: 12 },
+  margin: { l: 48, r: 20, t: 10, b: 40 },
+  xaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
+  yaxis: { gridcolor: "#252c3a", zerolinecolor: "#252c3a", tickcolor: "#8a93a6" },
+  hoverlabel: { bgcolor: "#1c2230", bordercolor: "#252c3a" },
+};
+const plotlyConfig = { responsive: true, displayModeBar: false };
+
+function renderDashboard(weights) {
+  const content = document.getElementById("content");
+  content.className = "";
+  content.classList.add("grid");
+
+  const hasWeight = weights.length > 0;
+  const latest = hasWeight ? weights[weights.length - 1] : null;
+  const firstDate = hasWeight ? weights[0].date : null;
+
+  const dailySeries = fillDailySeries(weights);
+  const ys = dailySeries.map(d => d.kg);
+  const ma7 = rollingMean(ys, 7);
+  const ma30 = rollingMean(ys, 30);
+
+  const last7 = ma7[ma7.length - 1];
+  const prevIdx = ma7.length - 1 - 7;
+  const prev7 = prevIdx >= 0 ? ma7[prevIdx] : null;
+  const wkDelta = (last7 != null && prev7 != null) ? last7 - prev7 : null;
+
+  const trendKgPerDay = recentTrendKgPerDay(weights, 30);
+  const trendKgPerWeek = trendKgPerDay != null ? trendKgPerDay * 7 : null;
+
+  const waistMeasurements = weights.filter(w => w.waistCm != null);
+  const hipMeasurements   = weights.filter(w => w.hipCm   != null);
+  const neckMeasurements  = weights.filter(w => w.neckCm  != null);
+
+  const lastWaist = waistMeasurements[waistMeasurements.length - 1] || null;
+  const lastHip   = hipMeasurements[hipMeasurements.length - 1] || null;
+  const lastNeck  = neckMeasurements[neckMeasurements.length - 1] || null;
+
+  const whtrVal = lastWaist ? whtr(lastWaist.waistCm) : null;
+  const whrVal  = (lastWaist && lastHip) ? whr(lastWaist.waistCm, lastHip.hipCm) : null;
+  const navyBF  = navyBodyFatPct({
+    waistCm: lastWaist?.waistCm, hipCm: lastHip?.hipCm, neckCm: lastNeck?.neckCm,
+  });
+
+  let waistTrendCm = null;
+  if (waistMeasurements.length >= 2) {
+    const cutoff = new Date(); cutoff.setUTCDate(cutoff.getUTCDate() - 90);
+    const recent = waistMeasurements.filter(w => w.date >= cutoff);
+    if (recent.length >= 2) {
+      waistTrendCm = recent[recent.length - 1].waistCm - recent[0].waistCm;
+    } else {
+      waistTrendCm = waistMeasurements[waistMeasurements.length - 1].waistCm
+                   - waistMeasurements[0].waistCm;
+    }
+  }
+
+  document.getElementById("data-status").textContent =
+    `${weights.length} mesures · ${waistMeasurements.length} cintura · ${HEIGHT_CM} cm · ${AGE} anys`;
+  document.getElementById("data-range").textContent =
+    firstDate ? `${toISODate(firstDate)} → ${toISODate(latest.date)}` : "";
+
+  const navyExtraNeeded = SEX === "female" ? "Afegir coll + maluc" : "Afegir coll";
+
+  const waistTilesHtml = (() => {
+    if (!lastWaist) {
+      return `
+        <div class="card span-12">
+          <h2>Circumferència de cintura</h2>
+          <div class="stat muted">Encara no hi ha dades</div>
+          <div class="note">Afegeix una columna "Cintura (cm)" al full. Fins i tot mesures setmanals desbloquegen el ratio cintura/alçada — un dels millors indicadors cardiometabòlics validats.</div>
+        </div>
+      `;
+    }
+    const daysSinceWaist = daysBetween(lastWaist.date, new Date());
+    const trendCls = waistTrendCm == null ? "flat"
+      : Math.abs(waistTrendCm) < 0.3 ? "flat"
+      : waistTrendCm > 0 ? "up" : "down";
+    const trendSign = waistTrendCm == null ? "" : (waistTrendCm > 0 ? "+" : "");
+    return `
+      <div class="card span-3">
+        <h2>Cintura</h2>
+        <div class="stat">${fmt(lastWaist.waistCm, 1)}<span class="unit">cm</span></div>
+        <div class="stat-sub">${toISODate(lastWaist.date)} · fa ${daysSinceWaist}d</div>
+      </div>
+      <div class="card span-3">
+        <h2>Cintura/Alçada</h2>
+        <div class="stat">${fmt(whtrVal, 3)}</div>
+        <div class="stat-sub">${bracketLabel("whtr", whtrVal)} · regla: &lt; 0.50</div>
+      </div>
+      <div class="card span-3">
+        <h2>Tendència cintura</h2>
+        <div class="stat">${waistTrendCm == null ? "–" : trendSign + fmt(waistTrendCm, 1)}<span class="unit">cm</span></div>
+        <div class="stat-sub"><span class="${trendCls}">${
+          waistTrendCm == null ? "calen ≥2 mesures"
+          : Math.abs(waistTrendCm) < 0.3 ? "estable"
+          : (waistTrendCm < 0 ? "perdent cintura" : "guanyant cintura")
+        }</span></div>
+      </div>
+      <div class="card span-3">
+        <h2>${navyBF != null ? "% Greix (Navy)" : whrVal != null ? "Cintura/Maluc" : "Desbloquejar més"}</h2>
+        ${navyBF != null
+          ? `<div class="stat">${fmt(navyBF, 1)}<span class="unit">%</span></div>
+             <div class="stat-sub">${bracketLabel("bodyFatPct", navyBF)} · estimació amb cinta</div>`
+          : whrVal != null
+            ? `<div class="stat">${fmt(whrVal, 2)}</div>
+               <div class="stat-sub">${bracketLabel("whr", whrVal)}</div>`
+            : `<div class="stat muted">${navyExtraNeeded}</div>
+               <div class="stat-sub">activa % greix estimat + ratio C/M</div>`}
+      </div>
+    `;
+  })();
+
+  // "Where you stand" rows — built only from data we actually have
+  const compareRowsAvailable = lastWaist != null;
+
+  content.innerHTML = `
+    <div class="card span-4">
+      <h2>Pes actual</h2>
+      <div class="stat">${hasWeight ? fmt(latest.kg, 2) : "–"}<span class="unit">kg</span></div>
+      <div class="stat-sub">${hasWeight ? toISODate(latest.date) : ""}</div>
+    </div>
+    <div class="card span-4">
+      <h2>Mitjana 7 dies</h2>
+      <div class="stat">${fmt(last7, 2)}<span class="unit">kg</span></div>
+      <div class="stat-sub">${formatDelta(wkDelta, "vs setm. ant.")}</div>
+    </div>
+    <div class="card span-4">
+      <h2>Tendència 30 dies</h2>
+      <div class="stat">${trendKgPerWeek == null ? "–" : (trendKgPerWeek >= 0 ? "+" : "") + fmt(trendKgPerWeek, 2)}<span class="unit">kg / set.</span></div>
+      <div class="stat-sub">${trendDescription(trendKgPerWeek)}</div>
+    </div>
+
+    <div class="card span-12">
+      <h2>Pes (kg) i cintura (cm) al llarg del temps</h2>
+      <div id="chart-weight" class="chart chart-tall"></div>
+      <div class="legend" style="margin-top: 8px">
+        <div class="legend-item"><span class="legend-swatch" style="background:#3a4359"></span> Diari</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#7c9cff"></span> Mitjana 7 dies</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#4ade80"></span> Mitjana 30 dies</div>
+        ${lastWaist ? `<div class="legend-item"><span class="legend-swatch" style="background:#c084fc"></span> Cintura (eix dret)</div>` : ""}
+      </div>
+      <div class="note">El pes diari té un soroll de ±0.5 kg (aigua, glucògen, menjar). Les mitjanes són el senyal real. La cintura segueix la massa grassa directament — cintura baixant amb pes estable = recomposició corporal.</div>
+    </div>
+
+    ${waistTilesHtml}
+
+    ${compareRowsAvailable ? `
+    <div class="card span-12">
+      <h2>On et situes · rangs de referència ${SEX === "female" ? "dones" : "homes"}</h2>
+      <div id="compare-block"></div>
+      <div class="note">
+        <b>Cintura/Alçada (WHtR)</b> és un dels predictors més forts del risc cardiometabòlic — la regla és mantenir-lo per sota de 0.50.
+        ${navyBF != null ? "<b>% Greix (Navy)</b> és una estimació basada en circumferències; útil entre escàners DEXA, no la substitueix." : ""}
+      </div>
+    </div>` : ""}
+  `;
+
+  if (hasWeight) renderWeightChart(dailySeries, ma7, ma30, weights);
+  if (compareRowsAvailable) renderCompareBlock({ lastWaist, lastHip, navyBF, whrVal });
+}
+
+function formatDelta(value, suffix) {
+  if (value == null) return "–";
+  const cls = Math.abs(value) < 0.05 ? "flat" : (value > 0 ? "up" : "down");
+  const sign = value > 0 ? "+" : "";
+  return `<span class="${cls}">${sign}${fmt(value, 2)} kg</span> ${suffix}`;
+}
+
+function trendDescription(kgPerWeek) {
+  if (kgPerWeek == null) return "";
+  const abs = Math.abs(kgPerWeek);
+  if (abs < 0.1) return "estable";
+  const kcalPerDay = (kgPerWeek * 7700) / 7;
+  const sign = kcalPerDay > 0 ? "superàvit" : "dèficit";
+  return `~${Math.abs(Math.round(kcalPerDay))} kcal/dia ${sign}`;
+}
+
+function renderCompareBlock({ lastWaist, lastHip, navyBF, whrVal }) {
+  const rows = [];
+  if (lastWaist) rows.push({
+    key: "whtr", label: "Cintura/Alçada", sub: "risc cardiometabòlic",
+    value: whtr(lastWaist.waistCm), fmtDp: 3,
+  });
+  if (navyBF != null) rows.push({
+    key: "bodyFatPct", label: "% Greix", sub: "estimació Navy",
+    value: navyBF, fmtDp: 1,
+  });
+  if (whrVal != null) rows.push({
+    key: "whr", label: "Cintura/Maluc", sub: "distribució de greix",
+    value: whrVal, fmtDp: 2,
+  });
+
+  document.getElementById("compare-block").innerHTML = rows.map(r => buildCompareRow(r)).join("");
+}
+
+function buildCompareRow({ key, label, sub, value, fmtDp }) {
+  const b = BRACKETS[key];
+  const [lo, hi] = b.domain;
+  const range = hi - lo;
+  const clamp = (v) => Math.max(lo, Math.min(hi, v));
+  const pct = (v) => ((clamp(v) - lo) / range) * 100;
+
+  let segHtml = "";
+  let prev = lo;
+  for (const seg of b.segments) {
+    const left = pct(prev);
+    const right = pct(seg.max);
+    const width = right - left;
+    if (width <= 0) continue;
+    segHtml += `<div class="compare-seg" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%">${seg.label}</div>`;
+    prev = seg.max;
+  }
+
+  const markerPos = pct(value);
+  const inRange = value >= lo && value <= hi;
+  const markerHtml = `<div class="compare-marker" title="${value.toFixed(fmtDp)}" style="left:${markerPos.toFixed(2)}%"></div>`;
+  const outNote = inRange ? "" : ` <small>(fora d'escala)</small>`;
+
+  return `
+    <div class="compare-row">
+      <div class="compare-label">${label}<small>${sub}</small></div>
+      <div class="compare-track">${segHtml}${markerHtml}</div>
+      <div class="compare-value">${value.toFixed(fmtDp)}${outNote}<small>${bracketLabel(key, value)}</small></div>
+    </div>
+  `;
+}
+
+function renderWeightChart(daily, ma7, ma30, weights) {
+  const xs = daily.map(d => d.iso);
+  const raw = daily.map(d => d.kg);
+
+  const finite = raw.filter(v => v != null);
+  const lo = Math.floor(Math.min(...finite) - 1);
+  const hi = Math.ceil(Math.max(...finite) + 1);
+
+  const traces = [
+    { type: "scatter", mode: "markers", name: "Diari",
+      x: xs, y: raw,
+      marker: { size: 4, color: "#3a4359", opacity: 0.7 },
+      hovertemplate: "%{x}<br>%{y:.2f} kg<extra></extra>",
+      connectgaps: false },
+    { type: "scatter", mode: "lines", name: "Mitjana 7 dies",
+      x: xs, y: ma7,
+      line: { color: "#7c9cff", width: 2 },
+      hovertemplate: "%{x}<br>7d: %{y:.2f} kg<extra></extra>",
+      connectgaps: true },
+    { type: "scatter", mode: "lines", name: "Mitjana 30 dies",
+      x: xs, y: ma30,
+      line: { color: "#4ade80", width: 2.5 },
+      hovertemplate: "%{x}<br>30d: %{y:.2f} kg<extra></extra>",
+      connectgaps: true },
+  ];
+
+  const waistRecs = weights.filter(w => w.waistCm != null);
+  const hasWaist = waistRecs.length > 0;
+  if (hasWaist) {
+    traces.push({
+      type: "scatter", mode: "lines+markers", name: "Cintura",
+      x: waistRecs.map(w => toISODate(w.date)),
+      y: waistRecs.map(w => w.waistCm),
+      yaxis: "y2",
+      line: { color: "#c084fc", width: 2, dash: "dot" },
+      marker: { size: 7, color: "#c084fc" },
+      hovertemplate: "%{x}<br>Cintura: %{y:.1f} cm<extra></extra>",
+      connectgaps: true,
+    });
+  }
+
+  const layout = {
+    ...layoutDefaults,
+    showlegend: false,
+    margin: { l: 48, r: hasWaist ? 56 : 16, t: 10, b: 40 },
+    yaxis: { ...layoutDefaults.yaxis, range: [lo, hi], title: "kg" },
+  };
+  if (hasWaist) {
+    const wValues = waistRecs.map(w => w.waistCm);
+    const wLo = Math.floor(Math.min(...wValues) - 2);
+    const wHi = Math.ceil(Math.max(...wValues) + 2);
+    layout.yaxis2 = {
+      title: "cm", overlaying: "y", side: "right",
+      gridcolor: "rgba(0,0,0,0)", zerolinecolor: "rgba(0,0,0,0)",
+      tickcolor: "#8a93a6", range: [wLo, wHi],
+      titlefont: { color: "#c084fc" }, tickfont: { color: "#c084fc" },
+    };
+  }
+  Plotly.newPlot("chart-weight", traces, layout, plotlyConfig);
+}
+
+// ============================================================
+// Entry point
+// ============================================================
+async function main() {
+  try {
+    const resp = await fetch(WEIGHT_CSV_URL, { cache: "no-store" });
+    let weights = [];
+    if (resp.ok) {
+      const text = await resp.text();
+      const parsed = Papa.parse(text, { skipEmptyLines: true });
+      weights = parseWeightCSV(parsed.data);
+    } else {
+      console.warn("CSV fetch error:", resp.status);
+    }
+    renderDashboard(weights);
+    if (weights.length === 0) {
+      const status = document.getElementById("data-status");
+      status.textContent = "Sense dades de pes — comprova que el full estigui publicat (File → Share → Publish to web → output CSV).";
+      status.style.color = "var(--warn)";
+    }
+  } catch (err) {
+    const content = document.getElementById("content");
+    content.className = "error";
+    content.textContent = `Error: ${err.message}`;
+    console.error(err);
+  }
+}
+
+main();
+</script>
+</body>
+</html>
