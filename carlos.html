@@ -359,7 +359,7 @@ function parseWeightCSV(rows) {
   let headerIdx = -1;
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const r = (rows[i] || []).map(c => String(c || "").trim().toLowerCase());
-    const hasDate = r.some(c => c === "data" || c === "date");
+    const hasDate = r.some(c => c.startsWith("data") || c.startsWith("date"));
     const hasWeight = r.some(c => c.startsWith("pes") || c.startsWith("weight"));
     if (hasDate && hasWeight) { headerIdx = i; break; }
   }
@@ -367,7 +367,7 @@ function parseWeightCSV(rows) {
 
   const header = rows[headerIdx].map(c => String(c || "").trim().toLowerCase());
   const colOf = (predicate) => header.findIndex(predicate);
-  const idxDate   = colOf(c => c === "data" || c === "date");
+  const idxDate   = colOf(c => c.startsWith("data") || c.startsWith("date"));
   const idxWeight = colOf(c => c.startsWith("pes") || c.startsWith("weight"));
   const idxWaist  = colOf(c => c.startsWith("cintura") || c.startsWith("waist"));
   const idxHip    = colOf(c => c.startsWith("maluc") || c.startsWith("hip"));
