@@ -148,6 +148,16 @@ const HEIGHT_M2 = HEIGHT_M * HEIGHT_M;
 // (CA labels match Catalan UI)
 // ============================================================
 const BRACKETS_MALE = {
+  bmi: {
+    unit: "kg/m²", domain: [16, 40],
+    segments: [
+      { max: 18.5, label: "infrapes" },
+      { max: 25,   label: "saludable" },
+      { max: 30,   label: "sobrepès" },
+      { max: 35,   label: "obesitat I" },
+      { max: 40,   label: "obesitat II" },
+    ],
+  },
   bodyFatPct: {
     unit: "%", domain: [5, 35],
     segments: [
@@ -202,6 +212,16 @@ const BRACKETS_MALE = {
 };
 
 const BRACKETS_FEMALE = {
+  bmi: {
+    unit: "kg/m²", domain: [16, 40],
+    segments: [
+      { max: 18.5, label: "infrapes" },
+      { max: 25,   label: "saludable" },
+      { max: 30,   label: "sobrepès" },
+      { max: 35,   label: "obesitat I" },
+      { max: 40,   label: "obesitat II" },
+    ],
+  },
   // Adult women, broader for age 50+
   bodyFatPct: {
     unit: "%", domain: [10, 45],
@@ -273,6 +293,13 @@ function bracketLabel(metricKey, value) {
 // ============================================================
 // Derived metrics
 // ============================================================
+function bmi(weightKg) { return weightKg / HEIGHT_M2; }
+
+// Healthy weight range (BMI 18.5–25)
+function healthyWeightRange() {
+  return { lo: 18.5 * HEIGHT_M2, hi: 25 * HEIGHT_M2 };
+}
+
 function whtr(waistCm) { return waistCm / HEIGHT_CM; }
 function whr(waistCm, hipCm) { return waistCm / hipCm; }
 
@@ -566,21 +593,31 @@ function renderDashboard(weights) {
     `;
   })();
 
-  // "Where you stand" rows — built only from data we actually have
-  const compareRowsAvailable = lastWaist != null;
+  const bmiVal = hasWeight ? bmi(latest.kg) : null;
+  const healthyRange = healthyWeightRange();
+  const overHealthy = (hasWeight && latest.kg > healthyRange.hi)
+    ? latest.kg - healthyRange.hi : null;
+
+  // "Where you stand" always shows at least IMC (just needs weight)
+  const compareRowsAvailable = hasWeight;
 
   content.innerHTML = `
-    <div class="card span-4">
+    <div class="card span-3">
       <h2>Pes actual</h2>
       <div class="stat">${hasWeight ? fmt(latest.kg, 2) : "–"}<span class="unit">kg</span></div>
       <div class="stat-sub">${hasWeight ? toISODate(latest.date) : ""}</div>
     </div>
-    <div class="card span-4">
+    <div class="card span-3">
+      <h2>IMC</h2>
+      <div class="stat">${fmt(bmiVal, 1)}</div>
+      <div class="stat-sub">${bmiVal != null ? bracketLabel("bmi", bmiVal) : "–"} · rang sa ${fmt(healthyRange.lo, 1)}–${fmt(healthyRange.hi, 1)} kg</div>
+    </div>
+    <div class="card span-3">
       <h2>Mitjana 7 dies</h2>
       <div class="stat">${fmt(last7, 2)}<span class="unit">kg</span></div>
       <div class="stat-sub">${formatDelta(wkDelta, "vs setm. ant.")}</div>
     </div>
-    <div class="card span-4">
+    <div class="card span-3">
       <h2>Tendència 30 dies</h2>
       <div class="stat">${trendKgPerWeek == null ? "–" : (trendKgPerWeek >= 0 ? "+" : "") + fmt(trendKgPerWeek, 2)}<span class="unit">kg / set.</span></div>
       <div class="stat-sub">${trendDescription(trendKgPerWeek)}</div>
@@ -605,14 +642,43 @@ function renderDashboard(weights) {
       <h2>On et situes · rangs de referència ${SEX === "female" ? "dones" : "homes"}</h2>
       <div id="compare-block"></div>
       <div class="note">
+        <b>IMC</b> (pes/alçada²) és l'indicador més clàssic; útil però no distingeix múscul de greix.
         <b>Cintura/Alçada (WHtR)</b> és un dels predictors més forts del risc cardiometabòlic — la regla és mantenir-lo per sota de 0.50.
         ${navyBF != null ? "<b>% Greix (Navy)</b> és una estimació basada en circumferències; útil entre escàners DEXA, no la substitueix." : ""}
       </div>
     </div>` : ""}
+
+    <div class="card span-12">
+      <h2>Què cal per veure més mètriques?</h2>
+      <table style="margin-top: 4px">
+        <thead><tr><th>Dada</th><th>Què desbloqueja</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>Cintura (cm)</b><br><small style="color:var(--muted)">setmanal, al matí, relaxada, a nivell del melic</small></td>
+            <td>Ratio cintura/alçada (WHtR) · tendència · barra de comparació</td>
+          </tr>
+          <tr>
+            <td><b>Coll (cm)</b>${SEX === "female" ? " <b>+ Maluc (cm)</b>" : ""}<br><small style="color:var(--muted)">afegeix la columna al full</small></td>
+            <td>% Greix estimat (fórmula Navy)${SEX !== "female" ? "" : ""}</td>
+          </tr>
+          ${SEX === "female" ? "" : `<tr>
+            <td><b>Maluc (cm)</b><br><small style="color:var(--muted)">afegeix la columna al full</small></td>
+            <td>Ratio cintura/maluc (WHR)</td>
+          </tr>`}
+          <tr>
+            <td><b>Escàner DEXA</b><br><small style="color:var(--muted)">cada 3–6 mesos</small></td>
+            <td>Composició completa: massa magra, massa grassa, % greix, greix visceral, FFMI, ALMI, ratio A/G, densitat òssia, distribució regional, simetria</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   `;
 
   if (hasWeight) renderWeightChart(dailySeries, ma7, ma30, weights);
-  if (compareRowsAvailable) renderCompareBlock({ lastWaist, lastHip, navyBF, whrVal });
+  if (compareRowsAvailable) renderCompareBlock({
+    weight: hasWeight ? latest.kg : null,
+    lastWaist, lastHip, navyBF, whrVal,
+  });
 }
 
 function formatDelta(value, suffix) {
@@ -631,8 +697,12 @@ function trendDescription(kgPerWeek) {
   return `~${Math.abs(Math.round(kcalPerDay))} kcal/dia ${sign}`;
 }
 
-function renderCompareBlock({ lastWaist, lastHip, navyBF, whrVal }) {
+function renderCompareBlock({ weight, lastWaist, lastHip, navyBF, whrVal }) {
   const rows = [];
+  if (weight != null) rows.push({
+    key: "bmi", label: "IMC", sub: "pes / alçada²",
+    value: bmi(weight), fmtDp: 1,
+  });
   if (lastWaist) rows.push({
     key: "whtr", label: "Cintura/Alçada", sub: "risc cardiometabòlic",
     value: whtr(lastWaist.waistCm), fmtDp: 3,
