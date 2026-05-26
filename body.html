@@ -74,9 +74,7 @@
   .chart { width: 100%; height: 300px }
   .chart-tall { height: 360px }
   .chart-short { height: 200px }
-  .loading, .error {
-    padding: 32px; text-align: center; color: var(--muted);
-  }
+  .loading, .error { padding: 32px; text-align: center; color: var(--muted) }
   .error { color: var(--bad) }
   .pill {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -94,14 +92,9 @@
   .change-flat { color: var(--muted) }
   .legend { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); flex-wrap: wrap }
   .legend-item { display: flex; align-items: center; gap: 4px }
-  .legend-swatch {
-    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
-  }
+  .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px }
   .note { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 8px }
-  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline }
-  .row > div { flex: 1; min-width: 140px }
 
-  /* Comparison bars (where you stand) */
   .compare-row {
     display: grid;
     grid-template-columns: 130px 1fr 100px;
@@ -164,7 +157,6 @@
 // ============================================================
 const WEIGHT_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZcwe6JZcbhyEe_QjWziIp6hfssOgZZAaWeLGXAQ5y9Q43PsyVD5Cdv6T85SAi1IDlqdRtJiWFb2ok/pub?gid=1881423293&single=true&output=csv";
 
-// Personal constants (from DEXA reports)
 const HEIGHT_CM = 175.3;
 const HEIGHT_M = HEIGHT_CM / 100;
 const HEIGHT_M2 = HEIGHT_M * HEIGHT_M;
@@ -208,6 +200,23 @@ const DEXA_SCANS = [
       "Left leg":  { leanLbs: 20.1, fatLbs: 6.6, fatPct: 23.4, totalLbs: 28.0 },
     },
   },
+  {
+    date: "2026-05-26",
+    totalLbs: 157.5, fatLbs: 36.5, leanLbs: 114.3, bmcLbs: 6.7,
+    bodyFatPct: 23.2, vatLbs: 1.36, rmrKcal: 1494,
+    androidFatPct: 26.3, gynoidFatPct: 26.3, agRatio: 1.00, boneZScore: 1.8,
+    regions: {
+      Arms:  { fatPct: 18.3, totalLbs: 21.4, fatLbs: 3.9,  leanLbs: 16.4, bmcLbs: 1.0 },
+      Legs:  { fatPct: 24.1, totalLbs: 56.0, fatLbs: 13.5, leanLbs: 39.8, bmcLbs: 2.7 },
+      Trunk: { fatPct: 24.6, totalLbs: 69.6, fatLbs: 17.1, leanLbs: 50.7, bmcLbs: 1.7 },
+    },
+    sides: {
+      "Right arm": { leanLbs: 8.4, fatLbs: 2.1, fatPct: 19.3, totalLbs: 11.0 },
+      "Left arm":  { leanLbs: 8.1, fatLbs: 1.8, fatPct: 17.4, totalLbs: 10.4 },
+      "Right leg": { leanLbs: 20.1, fatLbs: 6.7, fatPct: 23.9, totalLbs: 28.1 },
+      "Left leg":  { leanLbs: 19.8, fatLbs: 6.7, fatPct: 24.2, totalLbs: 27.9 },
+    },
+  },
 ];
 
 // ============================================================
@@ -227,14 +236,10 @@ function appendicularLeanKg(scan) {
 function almi(scan)  { return appendicularLeanKg(scan) / HEIGHT_M2; }
 function vatKg(scan) { return lb2kg(scan.vatLbs); }
 
-// Waist-to-height ratio (men: <0.5 healthy)
 function whtr(waistCm) { return waistCm / HEIGHT_CM; }
-
-// Waist-to-hip ratio (men: <0.9 healthy)
 function whr(waistCm, hipCm) { return waistCm / hipCm; }
 
-// US Navy body fat formula (men). All circumferences in cm.
-// BF% = 86.010 * log10(waist - neck) - 70.041 * log10(height) + 36.76
+// US Navy body fat (men). All cm.
 function navyBodyFatPct(waistCm, neckCm) {
   if (waistCm == null || neckCm == null || waistCm <= neckCm) return null;
   return 86.010 * Math.log10(waistCm - neckCm) - 70.041 * Math.log10(HEIGHT_CM) + 36.76;
@@ -393,14 +398,14 @@ function recentTrendKgPerDay(weights, days) {
 }
 
 // ============================================================
-// Weight CSV parsing — extracts weight + optional waist/hip/neck/arm/thigh
+// Weight CSV parsing
 // ============================================================
 function parseWeightCSV(rows) {
-  // Find header row
   let headerIdx = -1;
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const r = (rows[i] || []).map(c => String(c || "").trim().toLowerCase());
-    if (r.some(c => c === "date") && r.some(c => c.startsWith("weight"))) {
+    if (r.some(c => c.startsWith("date") || c.startsWith("data"))
+     && r.some(c => c.startsWith("weight") || c.startsWith("pes"))) {
       headerIdx = i; break;
     }
   }
@@ -408,18 +413,17 @@ function parseWeightCSV(rows) {
 
   const header = rows[headerIdx].map(c => String(c || "").trim().toLowerCase());
   const colOf = (predicate) => header.findIndex(predicate);
-  const idxDate   = colOf(c => c === "date");
-  const idxWeight = colOf(c => c.startsWith("weight"));
-  const idxWaist  = colOf(c => c.startsWith("waist"));
-  const idxHip    = colOf(c => c.startsWith("hip"));
-  const idxNeck   = colOf(c => c.startsWith("neck"));
-  const idxArm    = colOf(c => c.startsWith("arm"));
-  const idxThigh  = colOf(c => c.startsWith("thigh"));
+  const idxDate   = colOf(c => c.startsWith("date") || c.startsWith("data"));
+  const idxWeight = colOf(c => c.startsWith("weight") || c.startsWith("pes"));
+  const idxWaist  = colOf(c => c.startsWith("waist") || c.startsWith("cintura"));
+  const idxHip    = colOf(c => c.startsWith("hip")   || c.startsWith("maluc"));
+  const idxNeck   = colOf(c => c.startsWith("neck")  || c.startsWith("coll"));
+  const idxArm    = colOf(c => c.startsWith("arm")   || c.startsWith("braç") || c.startsWith("brac"));
+  const idxThigh  = colOf(c => c.startsWith("thigh") || c.startsWith("cuixa"));
 
-  // Helper: pull a column value as float or null
   const num = (r, i) => {
     if (i < 0) return null;
-    const v = (r[i] || "").trim();
+    const v = (r[i] || "").trim().replace(",", ".");
     if (!v) return null;
     const n = parseFloat(v);
     return isNaN(n) ? null : n;
@@ -432,9 +436,9 @@ function parseWeightCSV(rows) {
     const wStr = (r[idxWeight] || "").trim();
     if (!dStr || !wStr) continue;
     const date = parseDate(dStr);
-    const kg = parseFloat(wStr);
+    const kg = parseFloat(String(wStr).replace(",", "."));
     if (!date || isNaN(kg)) continue;
-    if (kg < 50 || kg > 110) continue;  // outlier filter
+    if (kg < 50 || kg > 110) continue;
     records.push({
       date, kg,
       waistCm: num(r, idxWaist),
@@ -446,8 +450,6 @@ function parseWeightCSV(rows) {
   }
   records.sort((a, b) => a.date - b.date);
 
-  // Collapse same-day duplicates. For weight: average. For circumferences:
-  // first non-null wins (measurements taken once per day, no need to average).
   const byDay = new Map();
   for (const r of records) {
     const k = toISODate(r.date);
@@ -530,18 +532,14 @@ function renderDashboard(weights) {
   const lastDexaDate = parseDate(lastDexa.date);
   const daysSinceDexa = daysBetween(lastDexaDate, new Date());
 
-  // Body composition indices (latest scan)
   const ffmiVal  = ffmi(lastDexa);
   const ffmiNorm = ffmiNormalized(lastDexa);
   const almiVal  = almi(lastDexa);
   const vatVal   = vatKg(lastDexa);
 
-  // Circumference data — find latest non-null of each
   const waistMeasurements = weights.filter(w => w.waistCm != null);
   const hipMeasurements   = weights.filter(w => w.hipCm   != null);
   const neckMeasurements  = weights.filter(w => w.neckCm  != null);
-  const armMeasurements   = weights.filter(w => w.armCm   != null);
-  const thighMeasurements = weights.filter(w => w.thighCm != null);
 
   const lastWaist = waistMeasurements[waistMeasurements.length - 1] || null;
   const lastHip   = hipMeasurements[hipMeasurements.length - 1] || null;
@@ -551,7 +549,6 @@ function renderDashboard(weights) {
   const whrVal  = (lastWaist && lastHip) ? whr(lastWaist.waistCm, lastHip.hipCm) : null;
   const navyBF  = (lastWaist && lastNeck) ? navyBodyFatPct(lastWaist.waistCm, lastNeck.neckCm) : null;
 
-  // Waist trend: diff between earliest and latest of last 90 days
   let waistTrendCm = null;
   if (waistMeasurements.length >= 2) {
     const cutoff = new Date(); cutoff.setUTCDate(cutoff.getUTCDate() - 90);
@@ -559,26 +556,23 @@ function renderDashboard(weights) {
     if (recent.length >= 2) {
       waistTrendCm = recent[recent.length - 1].waistCm - recent[0].waistCm;
     } else {
-      // Fall back to overall first-to-last
       waistTrendCm = waistMeasurements[waistMeasurements.length - 1].waistCm
                    - waistMeasurements[0].waistCm;
     }
   }
 
-  // ---- Header ----
   document.getElementById("data-status").textContent =
     `${weights.length} weigh-ins · ${waistMeasurements.length} waist · ${DEXA_SCANS.length} DEXA · height ${HEIGHT_CM} cm`;
   document.getElementById("data-range").textContent =
     firstDate ? `${toISODate(firstDate)} → ${toISODate(latest.date)}` : "";
 
-  // ---- Build the waist tiles row dynamically ----
   const waistTilesHtml = (() => {
     if (!lastWaist) {
       return `
         <div class="card span-12">
           <h2>Waist circumference</h2>
           <div class="stat muted">No waist data yet</div>
-          <div class="note">Add a "Waist (cm)" column to the weight sheet. Even weekly measurements will unlock waist-to-height ratio — one of the best validated cardiometabolic indicators.</div>
+          <div class="note">Add a "Waist (cm)" column to the weight sheet. Even weekly measurements unlock waist-to-height ratio — one of the best validated cardiometabolic indicators.</div>
         </div>
       `;
     }
@@ -652,7 +646,7 @@ function renderDashboard(weights) {
         <div class="legend-item"><span class="legend-swatch" style="background:#4ade80"></span> 30-day avg</div>
         ${lastWaist ? `<div class="legend-item"><span class="legend-swatch" style="background:#c084fc"></span> Waist (right axis)</div>` : ""}
       </div>
-      <div class="note">Daily weight has ±0.5 kg of noise (water, glycogen, food). The 7-day and 30-day averages are the actual signal. Waist circumference tracks fat mass directly — falling waist with stable weight = recomp.</div>
+      <div class="note">Daily weight has ±0.5 kg of noise (water, glycogen, food). The 7-day and 30-day averages are the signal. Waist tracks fat mass directly — falling waist with stable weight = recomp.</div>
     </div>
 
     ${waistTilesHtml}
@@ -703,7 +697,7 @@ function renderDashboard(weights) {
       <h2>Where you stand · men reference ranges</h2>
       <div id="compare-block"></div>
       <div class="note">
-        <b>WHtR</b> (waist÷height) is one of the strongest single predictors of cardiometabolic risk — the heuristic is to keep it under 0.50.
+        <b>WHtR</b> (waist÷height) is one of the strongest single predictors of cardiometabolic risk — keep it under 0.50.
         <b>FFMI</b> measures muscularity independent of body fat.
         <b>ALMI</b> is limb-only lean mass / height² (sarcopenia screen).
         <b>A/G ratio</b> compares android (lower abdomen) to gynoid (hips) fat.
@@ -728,9 +722,6 @@ function renderDashboard(weights) {
     <div class="card span-6">
       <h2>DEXA scan history</h2>
       <table id="dexa-table"></table>
-      ${DEXA_SCANS.length === 2 && Math.abs(daysBetween(parseDate(DEXA_SCANS[0].date), parseDate(DEXA_SCANS[1].date))) <= 7
-        ? `<div class="note">⚠ The two scans on file are ${Math.abs(daysBetween(parseDate(DEXA_SCANS[0].date), parseDate(DEXA_SCANS[1].date)))} days apart — the deltas reflect measurement noise (DEXA accuracy ±0.5%) and hydration, not real fat loss. Treat them as a baseline pair.</div>`
-        : ""}
     </div>
   `;
 
@@ -776,9 +767,6 @@ function dexaChange(field, unitLabel, upIsGood = "neutral") {
   return `<span class="${cls}">${sign}${fmt(delta, 2)} ${unitLabel}</span> vs prev`;
 }
 
-// ============================================================
-// Comparison bars
-// ============================================================
 function renderCompareBlock(scan, lastWaist, lastHip, lastNeck) {
   const rows = [
     { key: "ffmiNormalized", label: "FFMI",       sub: "normalized · kg/m²",  value: ffmiNormalized(scan), fmtDp: 2 },
@@ -859,7 +847,6 @@ function renderWeightChart(daily, ma7, ma30, weights) {
       connectgaps: true },
   ];
 
-  // Add waist overlay (right axis) if any waist data exists
   const waistRecs = weights.filter(w => w.waistCm != null);
   const hasWaist = waistRecs.length > 0;
   if (hasWaist) {
@@ -1003,9 +990,6 @@ function renderDexaTable() {
   tbl.innerHTML = html;
 }
 
-// ============================================================
-// Entry point
-// ============================================================
 async function main() {
   try {
     const resp = await fetch(WEIGHT_CSV_URL, { cache: "no-store" });
@@ -1014,13 +998,11 @@ async function main() {
       const text = await resp.text();
       const parsed = Papa.parse(text, { skipEmptyLines: true });
       weights = parseWeightCSV(parsed.data);
-    } else {
-      console.warn("Weight CSV fetch failed:", resp.status);
     }
     renderDashboard(weights);
     if (weights.length === 0) {
       const status = document.getElementById("data-status");
-      status.textContent = "No weight data — check the publish-to-web setting in the sheet (must be 'Entire document' or include the weight tab).";
+      status.textContent = "No weight data — check the publish-to-web setting.";
       status.style.color = "var(--warn)";
     }
   } catch (err) {
