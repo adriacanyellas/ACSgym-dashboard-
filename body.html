@@ -164,6 +164,15 @@ const HEIGHT_M2 = HEIGHT_M * HEIGHT_M;
 const LBS_PER_KG = 2.20462;
 const lb2kg = (lbs) => lbs / LBS_PER_KG;
 
+// Nutrition phases — colored backgrounds on the weight chart.
+// `to: null` means "up to today".
+const PHASES = [
+  { from: "2024-09-01", to: "2025-08-01", label: "No plan",      color: "rgba(138,147,166,0.08)", border: "#8a93a6" },
+  { from: "2025-08-01", to: "2026-03-22", label: "Maintenance",  color: "rgba(124,156,255,0.10)", border: "#7c9cff" },
+  { from: "2026-03-22", to: "2026-05-26", label: "Bulk",         color: "rgba(74,222,128,0.10)",  border: "#4ade80" },
+  { from: "2026-05-27", to: null,         label: "Cut",          color: "rgba(245,158,11,0.12)",  border: "#f59e0b" },
+];
+
 // Hardcoded DEXA scans. Add new scans by appending a record.
 const DEXA_SCANS = [
   {
@@ -645,6 +654,8 @@ function renderDashboard(weights) {
         <div class="legend-item"><span class="legend-swatch" style="background:#7c9cff"></span> 7-day avg</div>
         <div class="legend-item"><span class="legend-swatch" style="background:#4ade80"></span> 30-day avg</div>
         ${lastWaist ? `<div class="legend-item"><span class="legend-swatch" style="background:#c084fc"></span> Waist (right axis)</div>` : ""}
+        <span style="color: var(--border)">·</span>
+        ${PHASES.map(p => `<div class="legend-item"><span class="legend-swatch" style="background:${p.color};border:1px solid ${p.border}"></span> ${p.label}</div>`).join("")}
       </div>
       <div class="note">Daily weight has ±0.5 kg of noise (water, glycogen, food). The 7-day and 30-day averages are the signal. Waist tracks fat mass directly — falling waist with stable weight = recomp.</div>
     </div>
@@ -865,9 +876,34 @@ function renderWeightChart(daily, ma7, ma30, weights) {
   const layout = {
     ...layoutDefaults,
     showlegend: false,
-    margin: { l: 48, r: hasWaist ? 56 : 16, t: 10, b: 40 },
+    margin: { l: 48, r: hasWaist ? 56 : 16, t: 22, b: 40 },
     yaxis: { ...layoutDefaults.yaxis, range: [lo, hi], title: "kg" },
   };
+
+  // Phase shading + small labels above each phase block
+  const todayIso = toISODate(new Date());
+  layout.shapes = PHASES.map(p => ({
+    type: "rect", xref: "x", yref: "paper",
+    x0: p.from, x1: p.to || todayIso,
+    y0: 0, y1: 1,
+    fillcolor: p.color,
+    line: { width: 0 },
+    layer: "below",
+  }));
+  layout.annotations = PHASES.map(p => {
+    const start = new Date(p.from + "T00:00:00Z");
+    const end = new Date((p.to || todayIso) + "T00:00:00Z");
+    const mid = new Date((start.getTime() + end.getTime()) / 2);
+    return {
+      x: toISODate(mid), xref: "x",
+      y: 1.0, yref: "paper",
+      yshift: 8,
+      text: p.label,
+      showarrow: false,
+      font: { size: 10, color: p.border },
+    };
+  });
+
   if (hasWaist) {
     const wValues = waistRecs.map(w => w.waistCm);
     const wLo = Math.floor(Math.min(...wValues) - 2);
