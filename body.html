@@ -164,6 +164,20 @@ const HEIGHT_M2 = HEIGHT_M * HEIGHT_M;
 const LBS_PER_KG = 2.20462;
 const lb2kg = (lbs) => lbs / LBS_PER_KG;
 
+// ---- Goal / cut config -------------------------------------
+// Set GOAL_BODYFAT_PCT to your target DEXA body-fat %. The goal weight is
+// derived from your most recent scan's fat-free mass, so it stays honest as
+// your lean mass changes. Set active:false during a bulk to hide the card.
+const GOAL = {
+  active: true,
+  label: "Cut to 15% BF",
+  bodyFatPct: 15,               // target body fat %
+  startDate: "2026-05-27",      // when the current phase began
+  // Loss-rate guidance (fraction of bodyweight per week)
+  safeMaxRatePct: 1.0,          // ceiling for muscle preservation
+  idealRatePct: 0.7,            // sweet spot
+};
+
 // Nutrition phases — colored backgrounds on the weight chart.
 // `to: null` means "up to today".
 const PHASES = [
@@ -261,6 +275,24 @@ function appendicularLeanKg(scan) {
 }
 function almi(scan)  { return appendicularLeanKg(scan) / HEIGHT_M2; }
 function vatKg(scan) { return lb2kg(scan.vatLbs); }
+
+// Goal weight derived from latest scan's fat-free mass (lean + bone) held
+// constant at the target body-fat %.  weight = FFM / (1 - bf/100)
+function goalWeightKg(scan, targetBfPct) {
+  const ffmKg = ffm(scan);
+  return ffmKg / (1 - targetBfPct / 100);
+}
+
+// Fat vs lean split between two scans, in kg (negative = lost).
+function scanDelta(prev, last) {
+  return {
+    weightKg: lb2kg(last.totalLbs) - lb2kg(prev.totalLbs),
+    fatKg:    lb2kg(last.fatLbs)   - lb2kg(prev.fatLbs),
+    leanKg:   lb2kg(last.leanLbs)  - lb2kg(prev.leanLbs),
+    bfPct:    last.bodyFatPct - prev.bodyFatPct,
+    days:     daysBetween(parseDate(prev.date), parseDate(last.date)),
+  };
+}
 
 function whtr(waistCm) { return waistCm / HEIGHT_CM; }
 function whr(waistCm, hipCm) { return waistCm / hipCm; }
@@ -592,6 +624,92 @@ function renderDashboard(weights) {
   document.getElementById("data-range").textContent =
     firstDate ? `${toISODate(firstDate)} → ${toISODate(latest.date)}` : "";
 
+  // ---- Cut progress + loss-quality computations ----
+  const goalWeight = goalWeightKg(lastDexa, GOAL.bodyFatPct);
+  const goalStart = parseDate(GOAL.startDate);
+  // Anchor start weight: 7-day avg nearest the phase start, else first weigh-in
+  let startWeight = null;
+  if (hasWeight) {
+    const near = weights.filter(w => Math.abs(daysBetween(goalStart, w.date)) <= 5);
+    startWeight = near.length
+      ? near.reduce((s, w) => s + w.kg, 0) / near.length
+      : weights[0].kg;
+  }
+  const curWeight = last7 != null ? last7 : (hasWeight ? latest.kg : null);
+  let goalPctDone = null, kgToGo = null, etaWeeks = null, etaDate = null;
+  if (curWeight != null && startWeight != null && startWeight > goalWeight) {
+    goalPctDone = Math.max(0, Math.min(100,
+      ((startWeight - curWeight) / (startWeight - goalWeight)) * 100));
+    kgToGo = curWeight - goalWeight;
+    if (trendKgPerWeek != null && trendKgPerWeek < -0.05) {
+      etaWeeks = kgToGo / Math.abs(trendKgPerWeek);
+      const d = new Date(); d.setUTCDate(d.getUTCDate() + Math.round(etaWeeks * 7));
+      etaDate = toISODate(d);
+    }
+  }
+  // Current loss rate as % of bodyweight per week
+  const lossRatePct = (trendKgPerWeek != null && curWeight)
+    ? (Math.abs(trendKgPerWeek) / curWeight) * 100 : null;
+
+  // Fat/lean split for the two most recent scans
+  const scanSplit = DEXA_SCANS.length >= 2
+    ? scanDelta(DEXA_SCANS[DEXA_SCANS.length - 2], lastDexa) : null;
+
+  // ---- Cut progress card ----
+  const cutProgressHtml = (() => {
+    if (!GOAL.active || goalPctDone == null) return "";
+    const barColor = "#f59e0b";
+    return `
+      <div class="card span-8">
+        <h2>${GOAL.label} · progress</h2>
+        <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap">
+          <div class="stat">${fmt(goalPctDone, 0)}<span class="unit">% there</span></div>
+          <div class="stat-sub" style="margin:0">
+            ${fmt(startWeight, 1)} kg → <b style="color:var(--text)">${fmt(curWeight, 1)} kg</b> → ${fmt(goalWeight, 1)} kg goal
+          </div>
+        </div>
+        <div style="position:relative; height:14px; background:var(--panel2);
+                    border:1px solid var(--border); border-radius:7px; margin:14px 0 8px; overflow:hidden">
+          <div style="position:absolute; left:0; top:0; bottom:0; width:${goalPctDone.toFixed(1)}%;
+                      background:${barColor}; border-radius:7px 0 0 7px"></div>
+        </div>
+        <div class="stat-sub">
+          ${kgToGo > 0.05 ? `<b style="color:var(--text)">${fmt(kgToGo, 1)} kg</b> to go` : "goal reached"}
+          ${etaDate ? ` · at current pace ≈ <b style="color:var(--text)">${etaDate}</b> (${fmt(etaWeeks, 0)} wks)` : ""}
+          · goal = ${GOAL.bodyFatPct}% BF at current fat-free mass
+        </div>
+      </div>`;
+  })();
+
+  // ---- Loss-rate safety gauge ----
+  const lossRateHtml = (() => {
+    if (!GOAL.active || lossRatePct == null) return "";
+    // position on a 0 → 1.3%/wk scale
+    const scaleMax = 1.3;
+    const posPct = Math.min(100, (lossRatePct / scaleMax) * 100);
+    const idealPos = (GOAL.idealRatePct / scaleMax) * 100;
+    const maxPos = (GOAL.safeMaxRatePct / scaleMax) * 100;
+    const gaining = trendKgPerWeek != null && trendKgPerWeek > 0.05;
+    const verdict = gaining ? "gaining — not cutting"
+      : lossRatePct < 0.25 ? "very slow"
+      : lossRatePct <= GOAL.safeMaxRatePct ? "muscle-sparing zone"
+      : "too fast · risks muscle";
+    const vcls = gaining ? "flat"
+      : (lossRatePct > GOAL.safeMaxRatePct ? "up" : "down");
+    return `
+      <div class="card span-4">
+        <h2>Loss rate</h2>
+        <div class="stat">${fmt(lossRatePct, 2)}<span class="unit">% BW / wk</span></div>
+        <div style="position:relative; height:22px; background:linear-gradient(to right,
+              #3a4359 0%, #4ade80 ${idealPos}%, #4ade80 ${maxPos}%, #ef4444 100%);
+              border:1px solid var(--border); border-radius:6px; margin:12px 0 8px; opacity:0.85">
+          <div style="position:absolute; top:-4px; bottom:-4px; width:3px; left:${posPct.toFixed(1)}%;
+                      background:#fff; border-radius:2px; box-shadow:0 0 0 1px rgba(0,0,0,0.5)"></div>
+        </div>
+        <div class="stat-sub"><span class="${vcls}">${verdict}</span> · target ≤ ${GOAL.safeMaxRatePct}%/wk</div>
+      </div>`;
+  })();
+
   const waistTilesHtml = (() => {
     if (!lastWaist) {
       return `
@@ -663,6 +781,9 @@ function renderDashboard(weights) {
       <div class="stat-sub">${lastDexa.date} · ${fmt(lastDexa.bodyFatPct, 1)}% BF</div>
     </div>
 
+    ${cutProgressHtml}
+    ${lossRateHtml}
+
     <div class="card span-12">
       <h2>Weight (kg) + waist (cm) over time</h2>
       <div id="chart-weight" class="chart chart-tall"></div>
@@ -721,6 +842,40 @@ function renderDashboard(weights) {
       <div class="stat-sub">${bracketLabel("boneZ", lastDexa.boneZScore)} vs age peers</div>
     </div>
 
+    ${scanSplit ? `
+    <div class="card span-12">
+      <h2>Loss quality · last two scans (${DEXA_SCANS[DEXA_SCANS.length-2].date} → ${lastDexa.date}, ${scanSplit.days} days)</h2>
+      <div class="row" style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:6px">
+        <div style="flex:1; min-width:120px">
+          <div class="stat" style="font-size:26px">${scanSplit.weightKg >= 0 ? "+" : ""}${fmt(scanSplit.weightKg,1)}<span class="unit">kg total</span></div>
+        </div>
+        <div style="flex:1; min-width:120px">
+          <div class="stat" style="font-size:26px; color:var(--fat)">${scanSplit.fatKg >= 0 ? "+" : ""}${fmt(scanSplit.fatKg,1)}<span class="unit">kg fat</span></div>
+        </div>
+        <div style="flex:1; min-width:120px">
+          <div class="stat" style="font-size:26px; color:var(--lean)">${scanSplit.leanKg >= 0 ? "+" : ""}${fmt(scanSplit.leanKg,1)}<span class="unit">kg lean</span></div>
+        </div>
+        <div style="flex:1; min-width:120px">
+          <div class="stat" style="font-size:26px">${scanSplit.bfPct >= 0 ? "+" : ""}${fmt(scanSplit.bfPct,1)}<span class="unit">pts BF%</span></div>
+        </div>
+      </div>
+      ${(() => {
+        // Only meaningful when weight dropped
+        if (scanSplit.weightKg >= -0.1) return `<div class="note">Weight was stable or rising between these scans — recomp or bulk phase.</div>`;
+        const totalLost = -scanSplit.weightKg;
+        const fatShare = Math.max(0, Math.min(100, (-scanSplit.fatKg / totalLost) * 100));
+        const leanShare = Math.max(0, 100 - fatShare);
+        const quality = fatShare >= 85 ? "excellent" : fatShare >= 70 ? "good" : fatShare >= 55 ? "acceptable" : "poor — losing too much muscle";
+        const qcls = fatShare >= 70 ? "down" : fatShare >= 55 ? "flat" : "up";
+        return `
+        <div style="position:relative; height:22px; border-radius:6px; overflow:hidden; border:1px solid var(--border); display:flex; margin:8px 0">
+          <div style="width:${fatShare.toFixed(1)}%; background:var(--fat); display:flex; align-items:center; justify-content:center; font-size:11px; color:#1a1400; font-weight:600">${fmt(fatShare,0)}% fat</div>
+          <div style="width:${leanShare.toFixed(1)}%; background:var(--lean); display:flex; align-items:center; justify-content:center; font-size:11px; color:#04210f; font-weight:600">${leanShare >= 12 ? fmt(leanShare,0)+"% lean" : ""}</div>
+        </div>
+        <div class="note">Of the ${fmt(totalLost,1)} kg lost, <b style="color:var(--text)">${fmt(fatShare,0)}% was fat</b> and ${fmt(leanShare,0)}% lean — <span class="${qcls}">${quality}</span>. A well-run cut keeps fat share above ~85%.</div>`;
+      })()}
+    </div>` : ""}
+
     <div class="card span-12">
       <h2>Where you stand · men reference ranges</h2>
       <div id="compare-block"></div>
@@ -738,7 +893,13 @@ function renderDashboard(weights) {
       <div id="chart-composition" class="chart"></div>
     </div>
     <div class="card span-6">
-      <h2>Regional fat & lean (latest scan)</h2>
+      <h2>Regional fat
+        <span style="float:right; font-size:11px; text-transform:none; letter-spacing:0">
+          <a href="#" id="reg-trend" style="color:var(--accent); text-decoration:none">over time</a>
+          <span style="color:var(--border)">|</span>
+          <a href="#" id="reg-latest" style="color:var(--muted); text-decoration:none">latest scan</a>
+        </span>
+      </h2>
       <div id="chart-regional" class="chart"></div>
     </div>
 
@@ -759,6 +920,21 @@ function renderDashboard(weights) {
   renderRegional();
   renderSymmetry();
   renderDexaTable();
+
+  // Regional chart toggle
+  const trendLink = document.getElementById("reg-trend");
+  const latestLink = document.getElementById("reg-latest");
+  if (trendLink && latestLink) {
+    const setMode = (mode, e) => {
+      if (e) e.preventDefault();
+      regionalMode = mode;
+      trendLink.style.color  = mode === "trend"  ? "var(--accent)" : "var(--muted)";
+      latestLink.style.color = mode === "latest" ? "var(--accent)" : "var(--muted)";
+      renderRegional();
+    };
+    trendLink.addEventListener("click",  e => setMode("trend", e));
+    latestLink.addEventListener("click", e => setMode("latest", e));
+  }
 }
 
 function formatDelta(value, suffix) {
@@ -940,6 +1116,7 @@ function renderComposition() {
   const fat = DEXA_SCANS.map(s => lb2kg(s.fatLbs));
   const lean = DEXA_SCANS.map(s => lb2kg(s.leanLbs));
   const bone = DEXA_SCANS.map(s => lb2kg(s.bmcLbs));
+  const bf  = DEXA_SCANS.map(s => s.bodyFatPct);
   Plotly.newPlot("chart-composition", [
     { type: "bar", name: "Fat", x: dates, y: fat,
       marker: { color: "#f59e0b" },
@@ -950,38 +1127,68 @@ function renderComposition() {
     { type: "bar", name: "Bone (BMC)", x: dates, y: bone,
       marker: { color: "#7c9cff" },
       hovertemplate: "Bone %{y:.2f} kg<extra></extra>" },
+    // Lean-mass trend line on its own axis — makes "lean held while fat dropped" obvious
+    { type: "scatter", mode: "lines+markers", name: "Lean (trend)",
+      x: dates, y: lean, yaxis: "y2",
+      line: { color: "#4ade80", width: 2 }, marker: { size: 6 },
+      hovertemplate: "Lean %{y:.2f} kg<extra></extra>" },
+    // Body-fat % line, also right axis-friendly via annotation-free second trace
+    { type: "scatter", mode: "lines+markers", name: "Body fat %",
+      x: dates, y: bf, yaxis: "y3",
+      line: { color: "#f59e0b", width: 2, dash: "dot" }, marker: { size: 6 },
+      hovertemplate: "%{y:.1f}% BF<extra></extra>" },
   ], {
     ...layoutDefaults,
     barmode: "stack",
     showlegend: true,
     legend: { orientation: "h", y: -0.2 },
-    margin: { l: 48, r: 16, t: 10, b: 60 },
+    margin: { l: 48, r: 56, t: 10, b: 60 },
     yaxis: { ...layoutDefaults.yaxis, title: "kg" },
+    yaxis2: { overlaying: "y", side: "right", showgrid: false,
+      tickfont: { color: "#4ade80" }, range: [0, Math.max(...lean) * 1.6], showticklabels: false },
+    yaxis3: { overlaying: "y", side: "right", showgrid: false,
+      tickfont: { color: "#f59e0b", size: 10 }, title: { text: "BF %", font: { color: "#f59e0b", size: 11 } },
+      range: [0, Math.max(...bf) * 1.8] },
   }, plotlyConfig);
 }
 
+// Toggle between "latest scan fat+lean" and "regional fat over time"
+let regionalMode = "trend"; // "trend" | "latest"
 function renderRegional() {
-  const last = DEXA_SCANS[DEXA_SCANS.length - 1];
   const regs = ["Arms", "Legs", "Trunk"];
-  const fat = regs.map(r => lb2kg(last.regions[r].fatLbs));
-  const lean = regs.map(r => lb2kg(last.regions[r].leanLbs));
-  Plotly.newPlot("chart-regional", [
-    { type: "bar", orientation: "h", name: "Fat",
-      y: regs, x: fat,
-      marker: { color: "#f59e0b" },
-      hovertemplate: "%{y} fat: %{x:.2f} kg<extra></extra>" },
-    { type: "bar", orientation: "h", name: "Lean",
-      y: regs, x: lean,
-      marker: { color: "#4ade80" },
-      hovertemplate: "%{y} lean: %{x:.2f} kg<extra></extra>" },
-  ], {
-    ...layoutDefaults,
-    barmode: "stack",
-    showlegend: true,
-    legend: { orientation: "h", y: -0.2 },
-    margin: { l: 60, r: 16, t: 10, b: 60 },
-    xaxis: { ...layoutDefaults.xaxis, title: "kg" },
-  }, plotlyConfig);
+  const el = "chart-regional";
+  if (regionalMode === "latest" || DEXA_SCANS.length < 2) {
+    const last = DEXA_SCANS[DEXA_SCANS.length - 1];
+    const fat = regs.map(r => lb2kg(last.regions[r].fatLbs));
+    const lean = regs.map(r => lb2kg(last.regions[r].leanLbs));
+    Plotly.newPlot(el, [
+      { type: "bar", orientation: "h", name: "Fat", y: regs, x: fat,
+        marker: { color: "#f59e0b" }, hovertemplate: "%{y} fat: %{x:.2f} kg<extra></extra>" },
+      { type: "bar", orientation: "h", name: "Lean", y: regs, x: lean,
+        marker: { color: "#4ade80" }, hovertemplate: "%{y} lean: %{x:.2f} kg<extra></extra>" },
+    ], {
+      ...layoutDefaults, barmode: "stack", showlegend: true,
+      legend: { orientation: "h", y: -0.2 },
+      margin: { l: 60, r: 16, t: 10, b: 60 },
+      xaxis: { ...layoutDefaults.xaxis, title: "kg" },
+    }, plotlyConfig);
+  } else {
+    // Fat trajectory per region across all scans
+    const dates = DEXA_SCANS.map(s => s.date);
+    const colors = { Arms: "#eab308", Legs: "#f59e0b", Trunk: "#ef4444" };
+    const traces = regs.map(r => ({
+      type: "scatter", mode: "lines+markers", name: r,
+      x: dates, y: DEXA_SCANS.map(s => lb2kg(s.regions[r].fatLbs)),
+      line: { color: colors[r], width: 2 }, marker: { size: 6 },
+      hovertemplate: `${r} fat: %{y:.2f} kg<extra></extra>`,
+    }));
+    Plotly.newPlot(el, traces, {
+      ...layoutDefaults, showlegend: true,
+      legend: { orientation: "h", y: -0.2 },
+      margin: { l: 48, r: 16, t: 10, b: 60 },
+      yaxis: { ...layoutDefaults.yaxis, title: "fat kg" },
+    }, plotlyConfig);
+  }
 }
 
 function renderSymmetry() {
